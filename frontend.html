@@ -108,7 +108,8 @@ td.muted{color:#3a3020}
 
 /* ── FECHA BADGE ── */
 .fecha-badge{font-family:'JetBrains Mono',monospace;font-size:9px;padding:2px 7px;border-radius:3px;background:rgba(201,150,10,.1);color:#C9960A;border:0.5px solid rgba(201,150,10,.2)}
-
+</style>
+</head>
 <body>
 
 <!-- AUTH SCREEN -->
@@ -178,7 +179,6 @@ td.muted{color:#3a3020}
         </div>
         <div class="tab-btns">
           <button class="tab-btn active" onclick="switchView('cadena',this)">Cadena</button>
-          <button class="tab-btn" onclick="switchView('smile',this)">IV Smile</button>
           <button class="tab-btn" onclick="switchView('resumen',this)">Resumen</button>
         </div>
       </div>
@@ -262,7 +262,6 @@ async function loadData() {
     }
   } catch(e) {
     document.getElementById('live-pill').textContent = '● error';
-    document.getElementById('sidebar').innerHTML = `<div style="padding:14px;color:#c0392b;font-family:'JetBrains Mono',monospace;font-size:10px">Error: ${e.message}</div>`;
     console.error(e);
   }
 }
@@ -341,184 +340,9 @@ function switchView(view, btn) {
   renderView();
 }
 
-async function renderView() {
+function renderView() {
   if (state.view === 'cadena') renderCadena();
-  else if (state.view === 'smile') await renderSmile();
   else renderResumen();
-}
-
-let smileChart = null;
-
-async function renderSmile() {
-  const vto  = document.getElementById('ctrl-vto').value;
-  const show = document.getElementById('ctrl-show').value;
-
-  let rows = state.cadena.filter(r => r.vol_implicita > 0 && r.strike > 0);
-  if (vto)   rows = rows.filter(r => r.vencimiento === vto);
-  if (show === 'traded') rows = rows.filter(r => r.volumen_ars > 0);
-  if (show === 'oi')     rows = rows.filter(r => r.open_interest > 0);
-
-  if (!rows.length) {
-    document.getElementById('content').innerHTML = '<div class="empty"><p>Sin datos de IV para los filtros seleccionados</p></div>';
-    return;
-  }
-
-  const precioSuby = rows.find(r => r.precio_suby)?.precio_suby || 0;
-  const calls = rows.filter(r => r.tipo === 'CALL').sort((a,b) => a.strike - b.strike);
-  const puts  = rows.filter(r => r.tipo === 'PUT').sort((a,b)  => a.strike - b.strike);
-  const allIV = rows.map(r => r.vol_implicita);
-  const ivMin = Math.min(...allIV), ivMax = Math.max(...allIV);
-  const ivAvg = allIV.reduce((a,b)=>a+b,0)/allIV.length;
-  const atmRow = rows.reduce((best,r) => Math.abs(r.strike-precioSuby) < Math.abs((best?.strike||999999)-precioSuby) ? r : best, null);
-  const otmPut  = puts.filter(r => r.strike < precioSuby*0.95).at(-1);
-  const otmCall = calls.filter(r => r.strike > precioSuby*1.05)[0];
-  const skew = otmPut && otmCall ? (otmPut.vol_implicita - otmCall.vol_implicita).toFixed(2) : null;
-
-  const vtoLabel = vto === '2026-10-16' ? 'Octubre' : vto === '2026-12-18' ? 'Diciembre' : 'Todos';
-
-  document.getElementById('content').innerHTML = `
-    <div style="padding:16px 20px;height:100%;display:flex;flex-direction:column;gap:14px;overflow:auto">
-      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;flex-shrink:0">
-        <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#3a3020;margin-bottom:10px">
-          IV Smile — ${state.currentSuby} · ${vtoLabel}
-        </div>
-        <canvas id="smile-canvas" width="900" height="320" style="width:100%;height:320px;cursor:crosshair"></canvas>
-        <div id="smile-tooltip" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#7a6a3a;margin-top:6px;height:16px"></div>
-      </div>
-      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;flex-shrink:0">
-        <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#3a3020;margin-bottom:8px">Estadísticas IV</div>
-        <div id="smile-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px"></div>
-      </div>
-    </div>`;
-
-  await new Promise(r => setTimeout(r, 30));
-  const canvas = document.getElementById('smile-canvas');
-  if (!canvas) return;
-
-  const dpr = window.devicePixelRatio || 1;
-  const W = canvas.offsetWidth, H = 320;
-  canvas.width  = W * dpr;
-  canvas.height = H * dpr;
-  canvas.style.width  = W + 'px';
-  canvas.style.height = H + 'px';
-  const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-
-  const pad = {l:52, r:20, t:16, b:36};
-  const cW = W - pad.l - pad.r;
-  const cH = H - pad.t - pad.b;
-
-  // Rangos
-  const strikes = rows.map(r => r.strike);
-  const sMin = Math.min(...strikes), sMax = Math.max(...strikes);
-  const ivPad = (ivMax - ivMin) * 0.1 || 2;
-  const yMin = ivMin - ivPad, yMax = ivMax + ivPad;
-
-  const xS = s => pad.l + (s - sMin) / (sMax - sMin) * cW;
-  const yS = v => pad.t + cH - (v - yMin) / (yMax - yMin) * cH;
-
-  // Fondo
-  ctx.fillStyle = '#12100a';
-  ctx.fillRect(0, 0, W, H);
-
-  // Grid horizontal
-  const ySteps = 5;
-  for (let i = 0; i <= ySteps; i++) {
-    const v = yMin + (yMax - yMin) * i / ySteps;
-    const y = yS(v);
-    ctx.strokeStyle = '#1a1710'; ctx.lineWidth = 0.5;
-    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
-    ctx.fillStyle = '#3a3020'; ctx.font = '9px JetBrains Mono'; ctx.textAlign = 'right';
-    ctx.fillText(v.toFixed(1) + '%', pad.l - 4, y + 3);
-  }
-
-  // Grid vertical
-  const xSteps = 6;
-  for (let i = 0; i <= xSteps; i++) {
-    const s = sMin + (sMax - sMin) * i / xSteps;
-    const x = xS(s);
-    ctx.strokeStyle = '#1a1710'; ctx.lineWidth = 0.5;
-    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, H - pad.b); ctx.stroke();
-    ctx.fillStyle = '#3a3020'; ctx.font = '9px JetBrains Mono'; ctx.textAlign = 'center';
-    ctx.fillText('$' + Math.round(s).toLocaleString('es-AR'), x, H - pad.b + 14);
-  }
-
-  // Línea ATM
-  if (precioSuby >= sMin && precioSuby <= sMax) {
-    const xATM = xS(precioSuby);
-    ctx.strokeStyle = 'rgba(201,150,10,0.35)'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
-    ctx.beginPath(); ctx.moveTo(xATM, pad.t); ctx.lineTo(xATM, H - pad.b); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = '#C9960A'; ctx.font = '9px JetBrains Mono'; ctx.textAlign = 'center';
-    ctx.fillText('ATM', xATM, pad.t + 10);
-  }
-
-  // Línea de tendencia suave (calls)
-  const drawLine = (pts, color) => {
-    if (pts.length < 2) return;
-    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]);
-    ctx.beginPath();
-    pts.forEach((r, i) => i === 0 ? ctx.moveTo(xS(r.strike), yS(r.vol_implicita)) : ctx.lineTo(xS(r.strike), yS(r.vol_implicita)));
-    ctx.stroke(); ctx.setLineDash([]);
-  };
-  drawLine(calls, 'rgba(58,176,122,0.4)');
-  drawLine(puts,  'rgba(192,57,43,0.4)');
-
-  // Puntos
-  const drawPoints = (pts, color) => {
-    pts.forEach(r => {
-      const x = xS(r.strike), y = yS(r.vol_implicita);
-      const radius = Math.min(3 + Math.log10((r.open_interest||1)+1) * 1.5, 9);
-      ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2);
-      ctx.fillStyle = color; ctx.fill();
-      ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.lineWidth = 0.5; ctx.stroke();
-    });
-  };
-  drawPoints(calls, 'rgba(58,176,122,0.85)');
-  drawPoints(puts,  'rgba(192,57,43,0.85)');
-
-  // Leyenda
-  ctx.fillStyle = '#3ab07a'; ctx.beginPath(); ctx.arc(pad.l + 10, pad.t + 6, 5, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = '#7a6a3a'; ctx.font = '10px JetBrains Mono'; ctx.textAlign = 'left';
-  ctx.fillText('CALL', pad.l + 18, pad.t + 10);
-  ctx.fillStyle = '#c0392b'; ctx.beginPath(); ctx.arc(pad.l + 60, pad.t + 6, 5, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = '#7a6a3a'; ctx.fillText('PUT', pad.l + 68, pad.t + 10);
-
-  // Hover
-  const allPts = [...calls, ...puts];
-  canvas.onmousemove = e => {
-    const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    let closest = null, minDist = 20;
-    allPts.forEach(r => {
-      const dx = xS(r.strike) - mx, dy = yS(r.vol_implicita) - my;
-      const d = Math.sqrt(dx*dx + dy*dy);
-      if (d < minDist) { minDist = d; closest = r; }
-    });
-    const tt = document.getElementById('smile-tooltip');
-    if (closest) {
-      tt.innerHTML = `<span style="color:${closest.tipo==='CALL'?'#3ab07a':'#c0392b'}">${closest.tipo}</span> · ${closest.symbol} · Strike $${fmt(closest.strike)} · IV <span style="color:#C9960A">${closest.vol_implicita.toFixed(2)}%</span> · Último $${fmt(closest.ultimo_precio)} · OI ${fmtN(closest.open_interest)}`;
-    } else {
-      tt.innerHTML = '';
-    }
-  };
-  canvas.onmouseleave = () => { document.getElementById('smile-tooltip').innerHTML = ''; };
-
-  // Stats
-  document.getElementById('smile-stats').innerHTML = [
-    { l:'IV Mínima',  v: ivMin.toFixed(2)+'%' },
-    { l:'IV Máxima',  v: ivMax.toFixed(2)+'%' },
-    { l:'IV Promedio',v: ivAvg.toFixed(2)+'%', gold:true },
-    { l:'IV ATM',     v: atmRow ? atmRow.vol_implicita.toFixed(2)+'%' : '—', gold:true },
-    { l:'Skew (Put-Call 5%)', v: skew!=null?(skew>0?'+':'')+skew+'%':'—', cls: skew>0?'neg':skew<0?'pos':'' },
-    { l:'VH 40 ruedas', v: (rows[0]?.vol_hist_40r?.toFixed(2)||'—')+'%' },
-    { l:'Strikes con IV', v: allIV.length },
-    { l:'Spot', v: '$'+fmt(precioSuby), gold:true },
-  ].map(s=>`
-    <div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
-      <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.8px;color:#3a3020;margin-bottom:3px">${s.l}</div>
-      <div style="font-size:14px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${s.gold?'#C9960A':s.cls==='neg'?'#c0392b':s.cls==='pos'?'#3ab07a':'#e8e0cc'}">${s.v}</div>
-    </div>`).join('');
 }
 
 function renderCadena() {
@@ -685,6 +509,7 @@ function fmtN(v) {
   return v.toLocaleString('es-AR');
 }
 
+// ── INIT ───────────────────────────────────────────────────────────────────────
 init();
 </script>
 </body>
