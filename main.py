@@ -836,7 +836,7 @@ async def get_disponibles():
 
 
 @app.get("/admin/debug-parser")
-async def debug_parser():
+async def debug_parser(suby: str = "GGAL"):
     """Muestra filas crudas extraídas por pdfplumber para debug del parser."""
     if not HAS_PDF:
         return {"error": "pdfplumber no disponible"}
@@ -848,22 +848,20 @@ async def debug_parser():
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             total_pages = len(pdf.pages)
-            # Buscar páginas con GGAL
-            ggal_pages = []
+            target_pages = []
             for i, page in enumerate(pdf.pages):
                 text = page.extract_text() or ""
-                if "GGAL" in text or "GALICIA" in text:
-                    ggal_pages.append(i)
-                    page_texts.append({"pagina": i, "texto_primeras_lineas": text[:300]})
+                if suby.upper() in text.upper():
+                    target_pages.append(i)
+                    page_texts.append({"pagina": i, "texto_primeras_lineas": text[:400]})
 
-            # Tomar primera página de GGAL y mostrar tablas crudas
-            if ggal_pages:
-                page = pdf.pages[ggal_pages[0]]
+            if target_pages:
+                page = pdf.pages[target_pages[0]]
                 tables = page.extract_tables()
                 for t_idx, table in enumerate(tables[:3]):
-                    for r_idx, row in enumerate(table[:8]):
+                    for r_idx, row in enumerate(table[:10]):
                         resultado.append({
-                            "pagina": ggal_pages[0],
+                            "pagina": target_pages[0],
                             "tabla": t_idx,
                             "fila": r_idx,
                             "raw": row,
@@ -875,8 +873,9 @@ async def debug_parser():
         return {"error": str(e), "traceback": traceback.format_exc()}
     return {
         "fecha": fecha,
+        "suby": suby,
         "total_pages": total_pages,
-        "ggal_pages": ggal_pages,
+        "target_pages": target_pages,
         "page_texts": page_texts[:3],
         "filas_muestra": resultado,
     }

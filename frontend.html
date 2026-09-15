@@ -108,7 +108,7 @@ td.muted{color:#3a3020}
 
 /* ── FECHA BADGE ── */
 .fecha-badge{font-family:'JetBrains Mono',monospace;font-size:9px;padding:2px 7px;border-radius:3px;background:rgba(201,150,10,.1);color:#C9960A;border:0.5px solid rgba(201,150,10,.2)}
-</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 </head>
 <body>
 
@@ -179,6 +179,7 @@ td.muted{color:#3a3020}
         </div>
         <div class="tab-btns">
           <button class="tab-btn active" onclick="switchView('cadena',this)">Cadena</button>
+          <button class="tab-btn" onclick="switchView('smile',this)">IV Smile</button>
           <button class="tab-btn" onclick="switchView('resumen',this)">Resumen</button>
         </div>
       </div>
@@ -342,7 +343,165 @@ function switchView(view, btn) {
 
 function renderView() {
   if (state.view === 'cadena') renderCadena();
+  else if (state.view === 'smile') renderSmile();
   else renderResumen();
+}
+
+let smileChart = null;
+
+function renderSmile() {
+  const vto   = document.getElementById('ctrl-vto').value;
+  const show  = document.getElementById('ctrl-show').value;
+
+  let rows = state.cadena.filter(r => r.vol_implicita > 0 && r.strike > 0);
+  if (vto)   rows = rows.filter(r => r.vencimiento === vto);
+  if (show === 'traded') rows = rows.filter(r => r.volumen_ars > 0);
+  if (show === 'oi')     rows = rows.filter(r => r.open_interest > 0);
+
+  if (!rows.length) {
+    document.getElementById('content').innerHTML = '<div class="empty"><p>Sin datos de IV para los filtros seleccionados</p></div>';
+    return;
+  }
+
+  const precioSuby = rows.find(r => r.precio_suby)?.precio_suby || 0;
+
+  // Separar calls y puts, ordenar por strike
+  const calls = rows.filter(r => r.tipo === 'CALL').sort((a,b) => a.strike - b.strike);
+  const puts  = rows.filter(r => r.tipo === 'PUT').sort((a,b) => a.strike - b.strike);
+
+  // Para el eje X usamos moneyness: (Strike - Spot) / Spot * 100
+  const toMny = r => precioSuby ? ((r.strike - precioSuby) / precioSuby * 100) : r.strike;
+
+  document.getElementById('content').innerHTML = `
+    <div style="padding:16px 20px;height:100%;display:flex;flex-direction:column;gap:16px">
+      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;flex:1;min-height:0">
+        <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#3a3020;margin-bottom:10px">
+          Volatilidad Implícita vs Strike — ${state.currentSuby} ${vto ? (vto==='2026-10-16'?'Octubre':'Diciembre') : 'Todos los vencimientos'}
+        </div>
+        <canvas id="smile-canvas" style="max-height:320px"></canvas>
+      </div>
+      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px">
+        <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#3a3020;margin-bottom:8px">Estadísticas IV</div>
+        <div id="smile-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px"></div>
+      </div>
+    </div>`;
+
+  if (smileChart) { smileChart.destroy(); smileChart = null; }
+
+  const ctx = document.getElementById('smile-canvas').getContext('2d');
+  smileChart = new Chart(ctx, {
+    type: 'scatter',
+    data: {
+      datasets: [
+        {
+          label: 'CALL',
+          data: calls.map(r => ({ x: toMny(r), y: r.vol_implicita, strike: r.strike, sym: r.symbol, ultimo: r.ultimo_precio, oi: r.open_interest })),
+          backgroundColor: 'rgba(58,176,122,0.7)',
+          pointRadius: r => Math.min(3 + Math.log10((r?.raw?.oi||1)+1)*2, 10),
+          pointHoverRadius: 8,
+          borderColor: '#3ab07a',
+          borderWidth: 1,
+        },
+        {
+          label: 'PUT',
+          data: puts.map(r => ({ x: toMny(r), y: r.vol_implicita, strike: r.strike, sym: r.symbol, ultimo: r.ultimo_precio, oi: r.open_interest })),
+          backgroundColor: 'rgba(192,57,43,0.7)',
+          pointRadius: r => Math.min(3 + Math.log10((r?.raw?.oi||1)+1)*2, 10),
+          pointHoverRadius: 8,
+          borderColor: '#c0392b',
+          borderWidth: 1,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          labels: { color: '#7a6a3a', font: { family: 'JetBrains Mono', size: 11 } }
+        },
+        tooltip: {
+          backgroundColor: '#1a1710',
+          borderColor: '#2a2510',
+          borderWidth: 1,
+          titleColor: '#e8e0cc',
+          bodyColor: '#7a6a3a',
+          callbacks: {
+            title: items => items[0]?.raw?.sym || '',
+            label: item => [
+              `Strike: $${fmt(item.raw.strike)}`,
+              `IV: ${item.raw.y?.toFixed(2)}%`,
+              `Último: $${fmt(item.raw.ultimo)}`,
+              `OI: ${fmtN(item.raw.oi)}`,
+            ],
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Moneyness % (Strike vs Spot)', color: '#3a3020', font: { family: 'JetBrains Mono', size: 10 } },
+          grid: { color: '#1a1710' },
+          ticks: { color: '#5a4e2a', font: { family: 'JetBrains Mono', size: 10 },
+            callback: v => (v>0?'+':'')+v.toFixed(1)+'%' },
+        },
+        y: {
+          title: { display: true, text: 'IV%', color: '#3a3020', font: { family: 'JetBrains Mono', size: 10 } },
+          grid: { color: '#1a1710' },
+          ticks: { color: '#5a4e2a', font: { family: 'JetBrains Mono', size: 10 },
+            callback: v => v.toFixed(1)+'%' },
+        }
+      }
+    }
+  });
+
+  // Línea vertical en ATM (x=0)
+  const atmPlugin = {
+    id: 'atm_line',
+    afterDraw(chart) {
+      const {ctx, scales:{x,y}} = chart;
+      const xPos = x.getPixelForValue(0);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(201,150,10,0.4)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4,4]);
+      ctx.beginPath();
+      ctx.moveTo(xPos, y.top);
+      ctx.lineTo(xPos, y.bottom);
+      ctx.stroke();
+      ctx.fillStyle = '#C9960A';
+      ctx.font = '9px JetBrains Mono';
+      ctx.fillText('ATM', xPos+4, y.top+12);
+      ctx.restore();
+    }
+  };
+  smileChart.register ? smileChart.register(atmPlugin) : Chart.register(atmPlugin);
+  smileChart.update();
+
+  // Stats
+  const allIV = rows.map(r => r.vol_implicita).filter(Boolean);
+  const ivMin = Math.min(...allIV), ivMax = Math.max(...allIV);
+  const ivAvg = allIV.reduce((a,b)=>a+b,0)/allIV.length;
+  const atmRow = rows.reduce((best,r) => Math.abs(r.strike-precioSuby) < Math.abs((best?.strike||999999)-precioSuby) ? r : best, null);
+  const skew = calls.length && puts.length ? (() => {
+    const otmPut  = puts.filter(r => r.strike < precioSuby*0.95).at(-1);
+    const otmCall = calls.filter(r => r.strike > precioSuby*1.05)[0];
+    return otmPut && otmCall ? (otmPut.vol_implicita - otmCall.vol_implicita).toFixed(2) : null;
+  })() : null;
+
+  document.getElementById('smile-stats').innerHTML = [
+    { l:'IV Mínima',  v: ivMin.toFixed(2)+'%', c:'' },
+    { l:'IV Máxima',  v: ivMax.toFixed(2)+'%', c:'' },
+    { l:'IV Promedio',v: ivAvg.toFixed(2)+'%', c:'gold' },
+    { l:'IV ATM',     v: atmRow ? atmRow.vol_implicita.toFixed(2)+'%' : '—', c:'gold' },
+    { l:'Skew (Put-Call 5%)', v: skew!=null ? (skew>0?'+':'')+skew+'%' : '—', c: skew>0?'neg':skew<0?'pos':'' },
+    { l:'VH 40 ruedas', v: rows[0]?.vol_hist_40r?.toFixed(2)+'%' || '—', c:'muted' },
+    { l:'Strikes con IV', v: allIV.length, c:'' },
+    { l:'Spot', v: '$'+fmt(precioSuby), c:'gold' },
+  ].map(s=>`
+    <div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
+      <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.8px;color:#3a3020;margin-bottom:3px">${s.l}</div>
+      <div style="font-size:14px;font-weight:600;font-family:'JetBrains Mono',monospace" class="${s.c}">${s.v}</div>
+    </div>`).join('');
 }
 
 function renderCadena() {
