@@ -437,8 +437,8 @@ function renderSmile() {
   });
   [[calls,'rgba(58,176,122,0.85)'],[puts,'rgba(192,57,43,0.85)']].forEach(([pts,col])=>{
     pts.forEach(r=>{
-      const x=xs(r.strike),y=ys(r.vol_implicita),rad=Math.min(3+Math.log10((r.open_interest||1)+1)*1.5,9);
-      c.beginPath(); c.arc(x,y,rad,0,Math.PI*2); c.fillStyle=col; c.fill();
+      const x=xs(r.strike),y=ys(r.vol_implicita);
+      c.beginPath(); c.arc(x,y,5,0,Math.PI*2); c.fillStyle=col; c.fill();
     });
   });
   c.fillStyle='#3ab07a'; c.beginPath(); c.arc(pad.l+8,pad.t+6,4,0,Math.PI*2); c.fill();
