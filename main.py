@@ -604,7 +604,13 @@ a{color:#C9960A}</style></head><body>
 async def frontend(request: Request, stoken: str = ""):
     path = os.getenv("FRONTEND_FILE", "frontend.html")
     if os.path.exists(path):
-        return FileResponse(path, media_type="text/html")
+        from fastapi.responses import Response
+        content = open(path, encoding="utf-8").read()
+        return Response(
+            content=content,
+            media_type="text/html",
+            headers={"Content-Security-Policy": "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com https://www.googletagmanager.com; default-src * 'unsafe-inline' 'unsafe-eval' data: blob:"}
+        )
     return HTMLResponse("<h1>Merlin Options</h1><p>Frontend no encontrado: " + path + "</p>")
 
 @app.get("/health")
