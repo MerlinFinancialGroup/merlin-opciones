@@ -520,33 +520,35 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
         72: "vega",
         75: "rho",
     }
-    # COL_MAP para 81 columnas (YPFD/ALUA — 2 nulls extra en pos 15-16 y 30-31)
+    # COL_MAP para 81 columnas (YPFD/ALUA — 2 nulls extra en pos 15-16 y 29-30)
+    # Primera diferencia: +2 a partir de col 19 (min_prima)
+    # Segunda diferencia: +2 adicional a partir de col 33 (hora)
     COL_MAP_81 = {
         0:  "symbol",
         3:  "strike",
         6:  "distancia_itm_otm",
         8:  "moneyness",
         11: "precio_suby",
-        14: "apertura_prima",
-        21: "min_prima",   # +2
-        24: "max_prima",   # +2
-        27: "ultimo_precio",# +2
-        30: "var_prima_pct",# +2
-        35: "hora_ultimo",  # +2
-        38: "volumen_ars",  # +2
-        41: "cant_ops",     # +2
-        44: "open_interest",# +2
-        47: "var_oi_pct",   # +2
-        50: "precio_teorico",# +2
-        53: "desvio_teorico",# +2
-        56: "valor_temporal",# +2
-        59: "vol_hist_40r", # +2
-        62: "vol_implicita",# +2
-        65: "delta",        # +2
-        68: "gamma",        # +2
-        71: "theta",        # +2
-        74: "vega",         # +2
-        77: "rho",          # +2
+        14: "apertura_prima",   # igual
+        19: "min_prima",        # +2 (nulls en 15-16)
+        22: "max_prima",        # +2
+        25: "ultimo_precio",    # +2
+        28: "var_prima_pct",    # +2
+        35: "hora_ultimo",      # +4 (nulls en 15-16 y 29-30)
+        38: "volumen_ars",      # +4
+        41: "cant_ops",         # +4
+        44: "open_interest",    # +4
+        47: "var_oi_pct",       # +4
+        50: "precio_teorico",   # +4
+        53: "desvio_teorico",   # +4
+        56: "valor_temporal",   # +4
+        59: "vol_hist_40r",     # +4
+        62: "vol_implicita",    # +4
+        65: "delta",            # +4
+        68: "gamma",            # +4
+        71: "theta",            # +4
+        74: "vega",             # +4
+        77: "rho",              # +4
     }
     # COL_MAP para 73 columnas (BBAR y subyacentes con menos cols)
     COL_MAP_73 = {
