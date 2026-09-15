@@ -559,22 +559,25 @@ function renderView() {
 function renderSmile() {
   const vto  = document.getElementById('ctrl-vto').value;
   const show = document.getElementById('ctrl-show').value;
-  // Pool base: necesitan vol_implicita O vi_bid/vi_offer para el canvas
-  let base = state.cadena.filter(r => r.strike > 0 && (r.vol_implicita > 0 || r.vi_bid > 0 || r.vi_offer > 0));
-  if (vto)   base = base.filter(r => r.vencimiento === vto);
-  if (show === 'traded') base = base.filter(r => (r.volumen_ars||0) > 0);
-  if (show === 'oi')     base = base.filter(r => (r.open_interest||0) > 0);
+  // Pool base IV Últ: define los puntos principales del smile
+  let base = state.cadena.filter(r => r.strike > 0 && r.vol_implicita > 0);
+  // Pool BO: para las líneas VI Bid/Offer (incluye filas sin IV Últ)
+  let baseBO = state.cadena.filter(r => r.strike > 0 && (r.vi_bid > 0 || r.vi_offer > 0));
+  if (vto)   { base = base.filter(r => r.vencimiento === vto); baseBO = baseBO.filter(r => r.vencimiento === vto); }
+  if (show === 'traded') { base = base.filter(r => (r.volumen_ars||0) > 0); baseBO = baseBO.filter(r => (r.volumen_ars||0) > 0); }
+  if (show === 'oi')     { base = base.filter(r => (r.open_interest||0) > 0); baseBO = baseBO.filter(r => (r.open_interest||0) > 0); }
   if (!base.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
 
-  // Aplicar filtro de tipo al pool de stats (skew, ivMin/Max, etc.)
   const st = state.smileTipo;
   let rows = st === 'call' ? base.filter(r=>r.tipo==='CALL')
            : st === 'put'  ? base.filter(r=>r.tipo==='PUT')
            : base;
-  if (!rows.length) rows = base; // fallback si el filtro deja vacío
+  if (!rows.length) rows = base;
 
-  const calls = base.filter(r => r.tipo==='CALL').sort((a,b)=>a.strike-b.strike);
-  const puts  = base.filter(r => r.tipo==='PUT').sort((a,b)=>a.strike-b.strike);
+  const calls   = base.filter(r => r.tipo==='CALL').sort((a,b)=>a.strike-b.strike);
+  const puts    = base.filter(r => r.tipo==='PUT').sort((a,b)=>a.strike-b.strike);
+  const callsBO = baseBO.filter(r => r.tipo==='CALL').sort((a,b)=>a.strike-b.strike);
+  const putsBO  = baseBO.filter(r => r.tipo==='PUT').sort((a,b)=>a.strike-b.strike);
   const spot  = base.find(r=>r.precio_suby)?.precio_suby || 0;
   const allIV = rows.map(r=>r.vol_implicita).filter(v=>v>0);
   if (!allIV.length) { showEmpty('Sin datos de IV Último para los filtros seleccionados'); return; }
@@ -629,8 +632,12 @@ function renderSmile() {
   // Determinar rango Y: incluir vi_bid y vi_offer además de vol_implicita
   const showCalls = st === 'call' || st === 'ambos';
   const showPuts  = st === 'put'  || st === 'ambos';
-  const visRows = base.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
-  const allYVals = visRows.flatMap(r=>[r.vol_implicita,r.vi_bid,r.vi_offer].filter(v=>v>0));
+  const visRows   = base.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
+  const visRowsBO = baseBO.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
+  const allYVals = [
+    ...visRows.map(r=>r.vol_implicita).filter(v=>v>0),
+    ...visRowsBO.flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)),
+  ];
   if (!allYVals.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
   const yRawMin = Math.min(...allYVals), yRawMax = Math.max(...allYVals);
   const sArr = visRows.map(r=>r.strike);
@@ -685,11 +692,11 @@ function renderSmile() {
 
   // IV Bid (línea punteada fina) / IV Offer (línea punteada fina) / IV Últ (círculos sólidos)
   if(showCalls){
-    drawSerie(calls, r=>r.vi_bid,   'rgba(58,176,122,0.35)', 'rgba(58,176,122,0.5)',  [2,3]);
-    drawSerie(calls, r=>r.vi_offer, 'rgba(58,176,122,0.35)', 'rgba(58,176,122,0.5)',  [2,3]);
+    drawSerie(callsBO, r=>r.vi_bid,   'rgba(58,176,122,0.35)', 'rgba(58,176,122,0.5)',  [2,3]);
+    drawSerie(callsBO, r=>r.vi_offer, 'rgba(58,176,122,0.35)', 'rgba(58,176,122,0.5)',  [2,3]);
     // Área entre bid y offer (calls)
-    const cBid  = calls.filter(r=>r.vi_bid>0);
-    const cOff  = calls.filter(r=>r.vi_offer>0);
+    const cBid  = callsBO.filter(r=>r.vi_bid>0);
+    const cOff  = callsBO.filter(r=>r.vi_offer>0);
     if(cBid.length>=2&&cOff.length>=2){
       ctx.beginPath();
       cBid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_bid)):ctx.lineTo(xs(r.strike),ys(r.vi_bid)));
@@ -706,10 +713,10 @@ function renderSmile() {
     cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(58,176,122,0.85)'; ctx.fill(); });
   }
   if(showPuts){
-    drawSerie(puts, r=>r.vi_bid,   'rgba(192,57,43,0.35)', 'rgba(192,57,43,0.5)',  [2,3]);
-    drawSerie(puts, r=>r.vi_offer, 'rgba(192,57,43,0.35)', 'rgba(192,57,43,0.5)',  [2,3]);
-    const pBid  = puts.filter(r=>r.vi_bid>0);
-    const pOff  = puts.filter(r=>r.vi_offer>0);
+    drawSerie(putsBO, r=>r.vi_bid,   'rgba(192,57,43,0.35)', 'rgba(192,57,43,0.5)',  [2,3]);
+    drawSerie(putsBO, r=>r.vi_offer, 'rgba(192,57,43,0.35)', 'rgba(192,57,43,0.5)',  [2,3]);
+    const pBid  = putsBO.filter(r=>r.vi_bid>0);
+    const pOff  = putsBO.filter(r=>r.vi_offer>0);
     if(pBid.length>=2&&pOff.length>=2){
       ctx.beginPath();
       pBid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_bid)):ctx.lineTo(xs(r.strike),ys(r.vi_bid)));
