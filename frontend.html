@@ -341,15 +341,15 @@ function switchView(view, btn) {
   renderView();
 }
 
-function renderView() {
+async function renderView() {
   if (state.view === 'cadena') renderCadena();
-  else if (state.view === 'smile') renderSmile();
+  else if (state.view === 'smile') await renderSmile();
   else renderResumen();
 }
 
 let smileChart = null;
 
-function renderSmile() {
+async function renderSmile() {
   const vto   = document.getElementById('ctrl-vto').value;
   const show  = document.getElementById('ctrl-show').value;
 
@@ -373,14 +373,14 @@ function renderSmile() {
   const toMny = r => precioSuby ? ((r.strike - precioSuby) / precioSuby * 100) : r.strike;
 
   document.getElementById('content').innerHTML = `
-    <div style="padding:16px 20px;height:100%;display:flex;flex-direction:column;gap:16px">
-      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;flex:1;min-height:0">
+    <div style="padding:16px 20px;height:100%;display:flex;flex-direction:column;gap:16px;overflow:auto">
+      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;height:380px;flex-shrink:0">
         <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#3a3020;margin-bottom:10px">
           Volatilidad Implícita vs Strike — ${state.currentSuby} ${vto ? (vto==='2026-10-16'?'Octubre':'Diciembre') : 'Todos los vencimientos'}
         </div>
-        <canvas id="smile-canvas" style="max-height:320px"></canvas>
+        <canvas id="smile-canvas" style="height:320px;width:100%"></canvas>
       </div>
-      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px">
+      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;flex-shrink:0">
         <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#3a3020;margin-bottom:8px">Estadísticas IV</div>
         <div id="smile-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px"></div>
       </div>
@@ -388,7 +388,13 @@ function renderSmile() {
 
   if (smileChart) { smileChart.destroy(); smileChart = null; }
 
-  const ctx = document.getElementById('smile-canvas').getContext('2d');
+  // Dar tiempo al DOM para renderizar el canvas
+  await new Promise(r => setTimeout(r, 50));
+
+  const canvas = document.getElementById('smile-canvas');
+  if (!canvas) return;
+  canvas.height = 320;
+  const ctx = canvas.getContext('2d');
   smileChart = new Chart(ctx, {
     type: 'scatter',
     data: {
