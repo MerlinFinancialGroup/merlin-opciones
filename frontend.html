@@ -85,7 +85,6 @@ tbody td:first-child{position:sticky;left:0;background:#0e0d0a;z-index:4;text-al
 tbody tr.atm td:first-child{background:#131109}
 tbody tr:hover td:first-child{background:#1a1710}
 tbody tr.atm:hover td:first-child{background:#181507}
-/* FIX: el symbol no puede empujar el ancho de la columna (antes deformaba toda la tabla) */
 .sym{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sym.raw{color:#a09880;font-style:italic}
 td.center{text-align:center}
@@ -203,15 +202,16 @@ const API = 'https://web-production-2a938.up.railway.app';
 const SUPABASE_URL  = 'https://zqnxkgqalhhybcnzgjfk.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpxbnhrZ3FhbGhoeWJjbnpnamZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg5Mzk3MDEsImV4cCI6MjA5NDUxNTcwMX0.GD0RHfLGzplLhL1E-_GUHh3HXSNsZsvFi436wcm2tD4';
 
-const ATM_TOL  = 0.01;   // ±1% del spot = ATM
-const PC_CAP   = 50;     // P/C por encima de esto se muestra como ">50"
-const IV_MIN   = 0.5;    // IV por debajo de esto = basura del solver → null
-const IV_MAX   = 500;    // IV por encima de esto = basura → null
+const ATM_TOL  = 0.01;
+const PC_CAP   = 50;
+const IV_MIN   = 0.5;
+const IV_MAX   = 500;
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
-// Prefijos de subyacentes conocidos (para parsear tipo/strike desde el ticker).
-// Importante: SUPV termina en "V" — sin esta lista, el parser genérico lo confunde con un PUT.
 const KNOWN_PREFIXES = ['GGAL','YPFD','BBAR','TXAR','METR','CRES','SUPV','BYMA','TGSU2','EDN','VIST'];
+
+// Tasas por vencimiento (fallback para la VI local — mismos valores que el backend)
+const TASA_VTO_DEFAULT = { '2026-10-16': 23.16, '2026-12-18': 24.18 };
 
 // ── HELPERS ────────────────────────────────────────────────────────────────────
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
@@ -258,7 +258,7 @@ let state = {
 let cadenaAbort = null;
 let lastCadenaJson = null;
 
-// ── AUTH (pendiente de integración con el portal) ─────────────────────────────
+// ── AUTH ──────────────────────────────────────────────────────────────────────
 async function validarToken(token) {
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/validate_session`, {
@@ -278,15 +278,45 @@ async function validarToken(token) {
   }
 }
 
-// ── SANITIZACIÓN (defensas contra el feed IAMC) ────────────────────────────────
-// Extrae tipo y strike desde el ticker. Convención BYMA: SUBY + C/V + strike + (OC|DI)
-// Ej: YPFC9400DI → CALL 9400 · TXAV580.DI → PUT 580 · GFVC4200OC → PUT 4200
+// ── VI LOCAL (Black-Scholes bisección) ────────────────────────────────────────
+// Fallback: si el feed trae primas bid/ask pero no las VIs, se calculan acá.
+function bsPrice(S, K, T, r, sigma, tipo) {
+  if (T <= 0 || sigma <= 0) return Math.max(0, tipo === 'CALL' ? S - K : K - S);
+  const d1 = (Math.log(S/K) + (r + 0.5*sigma*sigma)*T) / (sigma*Math.sqrt(T));
+  const d2 = d1 - sigma*Math.sqrt(T);
+  const cdf = x => {
+    const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+    const s = x < 0 ? -1 : 1, xa = Math.abs(x), t = 1/(1+p*xa);
+    const y = 1 - (((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*Math.exp(-xa*xa);
+    return 0.5*(1+s*y);
+  };
+  return tipo === 'CALL'
+    ? S*cdf(d1) - K*Math.exp(-r*T)*cdf(d2)
+    : K*Math.exp(-r*T)*cdf(-d2) - S*cdf(-d1);
+}
+
+function ivLocal(prima, S, K, dias, tasaPct, tipo) {
+  if (!(prima > 0) || !(S > 0) || !(K > 0) || !(dias > 0)) return null;
+  if (tipo !== 'CALL' && tipo !== 'PUT') return null;
+  const T = dias / 365, r = (tasaPct || 23) / 100;
+  const intrinsic = tipo === 'CALL' ? Math.max(0, S-K) : Math.max(0, K-S);
+  if (prima <= intrinsic) return null;
+  let lo = 0.001, hi = 10;
+  for (let i = 0; i < 100; i++) {
+    const mid = (lo + hi) / 2;
+    const p = bsPrice(S, K, T, r, mid, tipo);
+    if (Math.abs(p - prima) < 1e-5) { lo = mid; break; }
+    if (p > prima) hi = mid; else lo = mid;
+  }
+  const iv = ((lo + hi) / 2) * 100;
+  return (iv >= IV_MIN && iv <= IV_MAX) ? iv : null;
+}
+
+// ── SANITIZACIÓN ───────────────────────────────────────────────────────────────
 function parseTicker(sym) {
   const token = String(sym || '').trim().split(/\s+/)[0].toUpperCase();
   if (!token) return { symbol: '', tipo: null, strike: null };
 
-  // 1) Si el token arranca con un subyacente conocido, lo que sigue es marcador+strike.
-  //    (evita que "SUPVC4700OC" se interprete como PUT por la V de SUPV)
   const known = [...new Set([...KNOWN_PREFIXES, ...state.subyacentes.map(s => s.subyacente)])]
     .filter(t => token.startsWith(t))
     .sort((a,b) => b.length - a.length)[0];
@@ -295,20 +325,18 @@ function parseTicker(sym) {
   let m = rest.match(/^\.?([CV])(\d{2,7}(?:\.\d+)?)\.?(?:OC|DI)?$/);
   if (m) return { symbol: token, tipo: m[1] === 'C' ? 'CALL' : 'PUT', strike: parseFloat(m[2]) };
 
-  // 2) Fallback genérico: primer C/V seguido del strike al final del token
   m = token.match(/^(.+?)([CV])(\d{2,7}(?:\.\d+)?)\.?(?:OC|DI)?$/);
   if (m) return { symbol: token, tipo: m[2] === 'C' ? 'CALL' : 'PUT', strike: parseFloat(m[3]) };
 
   return { symbol: token, tipo: null, strike: null };
 }
 
-// Moneyness calculada localmente — el backend marca TODOS los puts como OTM
 function moneynessOf(strike, spot, tipo) {
   if (!(strike > 0) || !(spot > 0) || (tipo !== 'CALL' && tipo !== 'PUT')) return null;
   const diff = (strike - spot) / spot;
   if (Math.abs(diff) < ATM_TOL) return 'ATM';
   if (tipo === 'CALL') return diff < 0 ? 'ITM' : 'OTM';
-  return diff > 0 ? 'ITM' : 'OTM'; // PUT: strike > spot = ITM
+  return diff > 0 ? 'ITM' : 'OTM';
 }
 
 const PRICE_FIELDS = ['ultimo_precio','apertura_prima','min_prima','max_prima','precio_teorico'];
@@ -320,7 +348,6 @@ function sanitizeCadena(rawRows) {
   let rawCount = 0;
 
   for (let r of rawRows) {
-    // 1) El backend metió la línea cruda del feed en symbol → recuperar ticker/strike/tipo
     if (/\s/.test(String(r.symbol || '').trim())) {
       const info = parseTicker(r.symbol);
       r = {
@@ -333,38 +360,58 @@ function sanitizeCadena(rawRows) {
       };
       rawCount++;
     }
-    // 2) Tipo ausente → deducir del ticker
     if (r.tipo !== 'CALL' && r.tipo !== 'PUT') {
       const info = parseTicker(r.symbol);
       if (!info.tipo) { droppedSyms.push(r.symbol); continue; }
       r = { ...r, tipo: info.tipo };
     }
-    // 3) Strike ausente o inválido → deducir del ticker; sin strike la fila no sirve
     if (!(r.strike > 0)) {
       const info = parseTicker(r.symbol);
       if (!info.strike) { droppedSyms.push(r.symbol); continue; }
       r = { ...r, strike: info.strike };
     }
-    // 4) Precios negativos → no existen primas negativas
     const patch = {};
     for (const f of PRICE_FIELDS) {
       if (r[f] != null && r[f] < 0) patch[f] = null;
     }
-    // 5) Teórico $0 = solver roto → teórico y desvío no son confiables
     if (!(r.precio_teorico > 0)) { patch.precio_teorico = null; patch.desvio_teorico = null; }
-    // 6) IV imposible (0.96%, etc.) = solver roto
-    if (r._iv_ult != null && (r._iv_ult < IV_MIN || r._iv_ult > IV_MAX)) {
+    // FIX: antes se chequeaba r._iv_ult (que acá todavía no existía) → nunca nullaba nada
+    if (r.vol_implicita != null && (r.vol_implicita < IV_MIN || r.vol_implicita > IV_MAX)) {
       patch.vol_implicita = null;
     }
     if (Object.keys(patch).length) r = { ...r, ...patch };
-    // 7) Moneyness recalculada siempre que se pueda
+
+    // 6b) VI Último: prioriza el del feed (Veta); cae al IV del PDF/IAMC.
+    //     Se calcula ACÁ (y no solo en el smile) → la columna VI Últ de la
+    //     cadena siempre tiene valor.
+    const viu = (r.vi_ultimo != null && r.vi_ultimo > IV_MIN && r.vi_ultimo < IV_MAX)
+      ? r.vi_ultimo : null;
+    r._iv_ult = viu ?? r.vol_implicita ?? null;
+
+    // 6c) Fallback: si el feed trae primas bid/ask pero no las VIs, se calculan acá
+    if ((r.vi_bid == null || r.vi_offer == null) && r.precio_suby > 0 && r.strike > 0 && r.dias_vto > 0) {
+      const tasaPct = r.tasa_libre != null ? r.tasa_libre : (TASA_VTO_DEFAULT[r.vencimiento] ?? 23);
+      if (r.vi_bid == null && r.bid > 0) {
+        const v = ivLocal(r.bid, r.precio_suby, r.strike, r.dias_vto, tasaPct, r.tipo);
+        if (v != null) r.vi_bid = v;
+      }
+      if (r.vi_offer == null && r.ask > 0) {
+        const v = ivLocal(r.ask, r.precio_suby, r.strike, r.dias_vto, tasaPct, r.tipo);
+        if (v != null) r.vi_offer = v;
+      }
+      if (r._iv_ult == null && r.ultimo_precio > 0) {
+        const v = ivLocal(r.ultimo_precio, r.precio_suby, r.strike, r.dias_vto, tasaPct, r.tipo);
+        if (v != null) r._iv_ult = v;
+      }
+    }
+
     const mn = moneynessOf(r.strike, spot, r.tipo);
     if (mn) r.moneyness = mn;
 
     out.push(r);
   }
 
-  if (droppedSyms.length) console.warn(`[sanitize] ${droppedSyms.length} filas descartadas (sin strike/tipo recuperable):`, droppedSyms.slice(0,5));
+  if (droppedSyms.length) console.warn(`[sanitize] ${droppedSyms.length} filas descartadas:`, droppedSyms.slice(0,5));
   if (rawCount) console.warn(`[sanitize] ${rawCount} filas reconstruidas desde línea cruda del feed`);
 
   return { rows: out, dropped: droppedSyms.length };
@@ -435,7 +482,7 @@ async function loadCadena(suby, silent = false) {
     document.getElementById('suby-header').style.display = 'block';
     document.getElementById('controls').style.display = 'flex';
 
-    populateVtos();          // primero el select (el header lee el filtro elegido)
+    populateVtos();
     updateSubyHeader(suby);
 
     if (!unchanged) renderView();
@@ -452,7 +499,6 @@ function updateSubyHeader(suby) {
   const pcRatio = state.resumen.put_call_ratio?.[suby];
   const tasa = state.cadena.find(x => x.tasa_libre != null)?.tasa_libre;
 
-  // FIX: P/C validado, con tope, y con el color bien (alto = bearish = rojo)
   const pcValid = typeof pcRatio === 'number' && isFinite(pcRatio);
   const pcTxt = pcValid ? (pcRatio > PC_CAP ? '>' + PC_CAP : pcRatio.toFixed(2)) : null;
   const pcCls = !pcValid ? '' : pcRatio >= 1 ? 'dn' : pcRatio <= 0.7 ? 'up' : '';
@@ -480,7 +526,7 @@ function updateSubyHeader(suby) {
     ${pcTxt!=null?`<div class="meta-item">Put/Call: <span class="${pcCls}">${pcTxt}</span></div>`:''}
     <div class="meta-item">Tasa libre: <span>${tasa!=null?tasa+'%':'—'}</span></div>
     <div class="meta-item">Días vto: <span>${diasTxt}</span></div>
-    ${state.dropped>0?`<div class="meta-item" title="Filas descartadas por datos inservibles (sin strike/tipo recuperable)">Inválidas ocultas: <span class="dn">${state.dropped}</span></div>`:''}
+    ${state.dropped>0?`<div class="meta-item" title="Filas descartadas por datos inservibles">Inválidas ocultas: <span class="dn">${state.dropped}</span></div>`:''}
   `;
 }
 
@@ -520,7 +566,7 @@ function buildSidebar() {
   sb.innerHTML = html;
 }
 
-// ── FILTROS COMPARTIDOS ────────────────────────────────────────────────────────
+// ── FILTROS ────────────────────────────────────────────────────────────────────
 function getFilteredRows() {
   const tipo = document.getElementById('ctrl-tipo').value;
   const vto  = document.getElementById('ctrl-vto').value;
@@ -532,7 +578,6 @@ function getFilteredRows() {
   if (show === 'traded') rows = rows.filter(r => (r.volumen_ars||0) > 0);
   if (show === 'oi')     rows = rows.filter(r => (r.open_interest||0) > 0);
 
-  // FIX: filas sin strike van al FINAL, no arriba
   const sk = r => (r.strike > 0 ? r.strike : Infinity);
   return [...rows].sort((a,b) =>
     sk(a) - sk(b) ||
@@ -560,17 +605,16 @@ function renderSmile() {
   const tipoFiltro = document.getElementById('ctrl-tipo').value;
   const st = tipoFiltro === 'CALL' ? 'call' : tipoFiltro === 'PUT' ? 'put' : 'ambos';
 
-  // Clave de contexto — resetea zoom solo si cambia suby/vto/tipo
   const zoomKey = (state.currentSuby||'') + '|' + vto + '|' + st;
 
-  // Pools de datos
-  state.cadena.forEach(r => { r._iv_ult = (r.vi_ultimo > 0 ? r.vi_ultimo : r.vol_implicita) || null; });
+  // _iv_ult ya viene de sanitizeCadena (disponible también para la tabla)
   let base = state.cadena.filter(r => r.strike > 0 && r._iv_ult > 0);
   let baseBO = state.cadena.filter(r => r.strike > 0 && (r.vi_bid > 0 || r.vi_offer > 0));
   if (vto)   { base = base.filter(r => r.vencimiento === vto); baseBO = baseBO.filter(r => r.vencimiento === vto); }
   if (show === 'traded') { base = base.filter(r => (r.volumen_ars||0) > 0); baseBO = baseBO.filter(r => (r.volumen_ars||0) > 0); }
   if (show === 'oi')     { base = base.filter(r => (r.open_interest||0) > 0); baseBO = baseBO.filter(r => (r.open_interest||0) > 0); }
   if (!base.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
+  if (!baseBO.length) console.warn('[smile] sin vi_bid/vi_offer en los datos — el backend no los está enviando');
 
   let rows = st === 'call' ? base.filter(r=>r.tipo==='CALL')
            : st === 'put'  ? base.filter(r=>r.tipo==='PUT')
@@ -595,11 +639,9 @@ function renderSmile() {
 
   const showCalls = st === 'call' || st === 'ambos';
   const showPuts  = st === 'put'  || st === 'ambos';
-  const soloUno   = st === 'call' || st === 'put';
   const visRows   = base.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
   const visRowsBO = baseBO.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
 
-  // Rango Y global (todos los puntos)
   const allYVals = [
     ...visRows.map(r=>r._iv_ult).filter(v=>v>0),
     ...visRowsBO.flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)),
@@ -611,25 +653,18 @@ function renderSmile() {
   const yPad = (yRawMax-yRawMin)*0.03||0.5;
   const yMin = yRawMin-yPad, yMax = yRawMax+yPad;
 
-  // Leyenda (necesaria antes del early-redraw)
+  // Leyenda: los puntos de bid/offer se dibujan SIEMPRE que existan
   const legendItems = [];
-  if(showCalls){
-    legendItems.push(['CALL Últ','rgba(220,220,220,0.9)',false]);
-    if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
-  }
-  if(showPuts){
-    legendItems.push(['PUT Últ','rgba(201,150,10,0.9)',false]);
-    if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
-  }
+  if(showCalls) legendItems.push(['CALL Últ','rgba(220,220,220,0.9)',false]);
+  if(showPuts)  legendItems.push(['PUT Últ','rgba(201,150,10,0.9)',false]);
+  if(visRowsBO.length) legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]);
 
-  // Zoom: preservar si la key es la misma, resetear si cambió
   if (!state._smileZoom || state._smileZoomKey !== zoomKey) {
     const sRange = sMax - sMin || 1;
     state._smileZoom = { xMin: sMin - sRange*0.03, xMax: sMax + sRange*0.03 };
     state._smileZoomKey = zoomKey;
   }
 
-  // Rebuild DOM solo si no existe el canvas
   const existingCanvas = document.getElementById('sc');
   if (!existingCanvas) {
     document.getElementById('content').innerHTML = `
@@ -659,7 +694,6 @@ function renderSmile() {
       </div>`;
   }
 
-  // Dibujar canvas
   const canvas = document.getElementById('sc');
   const dpr = window.devicePixelRatio||1;
   const W = canvas.offsetWidth, H = 507;
@@ -671,18 +705,16 @@ function renderSmile() {
   const cW = W-pad.l-pad.r, cH = H-pad.t-pad.b;
   const ly = pad.t - 14;
 
-  // Función de dibujo reutilizable (usa zoom actual)
   function doDraw() {
     const z = state._smileZoom;
     redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
       z.xMin, z.xMax, yMin, yMax,
-      spot, sMin, sMax, showCalls, showPuts, soloUno,
+      spot, sMin, sMax, showCalls, showPuts,
       calls, puts, callsBO, putsBO, visRows, legendItems, ly);
   }
 
   doDraw();
 
-  // Zoom con rueda
   canvas.onwheel = e => {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
@@ -701,7 +733,6 @@ function renderSmile() {
     doDraw();
   };
 
-  // Pan con drag
   let dragStart = null;
   canvas.onmousedown = e => {
     dragStart = { x: e.clientX, zoom: {...state._smileZoom} };
@@ -716,16 +747,14 @@ function renderSmile() {
       state._smileZoom = { xMin: dragStart.zoom.xMin + shift, xMax: dragStart.zoom.xMax + shift };
       doDraw();
     } else {
-      // Tooltip
       const rect = canvas.getBoundingClientRect();
       const mx = (e.clientX - rect.left) * (W / rect.width);
       const my = (e.clientY - rect.top) * (H / rect.height);
       const z = state._smileZoom;
       const xsL = s => pad.l + (z.xMax===z.xMin ? cW/2 : (s-z.xMin)/(z.xMax-z.xMin)*cW);
-      // yMin/yMax dinámico según visibles
       const inView = r => r.strike >= z.xMin && r.strike <= z.xMax;
       const yValsV = [...visRows.filter(inView).map(r=>r._iv_ult).filter(v=>v>0),
-        ...(soloUno?visRowsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)):[])]
+        ...visRowsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0))];
       const yrMin = yValsV.length?Math.min(...yValsV):yMin;
       const yrMax = yValsV.length?Math.max(...yValsV):yMax;
       const yp = (yrMax-yrMin)*0.03||0.5;
@@ -754,16 +783,17 @@ function renderSmile() {
 
 function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     xMin, xMax, yMinFull, yMaxFull, spot, sMin, sMax,
-    showCalls, showPuts, soloUno, calls, puts, callsBO, putsBO, visRows, legendItems, ly) {
+    showCalls, showPuts, calls, puts, callsBO, putsBO, visRows, legendItems, ly) {
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle='#12100a'; ctx.fillRect(0,0,W,H);
-  // Recalcular rango Y con solo los puntos en el rango X visible
   const inView = r => r.strike >= xMin && r.strike <= xMax;
+  // Rango Y dinámico — incluye bid/offer SIEMPRE (antes solo con filtro de tipo,
+  // y las líneas quedaban dibujadas fuera del rango visible en "ambos")
   const yVals = [
     ...(showCalls ? calls.filter(inView).map(r=>r._iv_ult).filter(v=>v>0) : []),
     ...(showPuts  ? puts.filter(inView).map(r=>r._iv_ult).filter(v=>v>0)  : []),
-    ...(showCalls && soloUno ? callsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)) : []),
-    ...(showPuts  && soloUno ? putsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0))  : []),
+    ...(showCalls ? callsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)) : []),
+    ...(showPuts  ? putsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0))  : []),
   ];
   const yRawMin = yVals.length ? Math.min(...yVals) : yMinFull;
   const yRawMax = yVals.length ? Math.max(...yVals) : yMaxFull;
@@ -796,34 +826,63 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     ctx.fillStyle='#C9960A'; ctx.font='9px monospace'; ctx.textAlign='center';
     ctx.fillText('ATM',xa,H-pad.b+22);
   }
-  function drawS(pts, getY, strokeCol, dotCol, dash=[]) {
-    const valid = pts.filter(r=>getY(r)>0&&r.strike>=xMin&&r.strike<=xMax);
-    if(!valid.length) return;
-    if(valid.length>=2){
-      ctx.strokeStyle=strokeCol; ctx.lineWidth=1.2; ctx.setLineDash(dash);
-      ctx.beginPath(); valid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(getY(r))):ctx.lineTo(xs(r.strike),ys(getY(r))));
-      ctx.stroke(); ctx.setLineDash([]);
-    }
-    valid.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(getY(r)),3,0,Math.PI*2); ctx.fillStyle=dotCol; ctx.fill(); });
+
+  function lineOf(pts, getY, col, dash=[], width=1.2) {
+    const valid = pts.filter(r=>getY(r)>0&&inView(r));
+    if(valid.length<2) return;
+    ctx.strokeStyle=col; ctx.lineWidth=width; ctx.setLineDash(dash);
+    ctx.beginPath(); valid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(getY(r))):ctx.lineTo(xs(r.strike),ys(getY(r))));
+    ctx.stroke(); ctx.setLineDash([]);
   }
+  function dotsOf(pts, getY, col, rad) {
+    pts.filter(r=>getY(r)>0&&inView(r)).forEach(r=>{
+      ctx.beginPath(); ctx.arc(xs(r.strike),ys(getY(r)),rad,0,Math.PI*2);
+      ctx.fillStyle=col; ctx.fill();
+    });
+  }
+
+  // ── CAPA 1: líneas VI Bid / VI Offer (debajo de todo) ──
   if(showCalls){
-    if(soloUno){
-      drawS(callsBO,r=>r.vi_bid,'rgba(58,176,122,0.7)','rgba(58,176,122,0.9)',[3,3]);
-      drawS(callsBO,r=>r.vi_offer,'rgba(192,57,43,0.7)','rgba(192,57,43,0.9)',[3,3]);
-    }
-    const cUlt=calls.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
-    if(cUlt.length>=2){ ctx.strokeStyle='rgba(220,220,220,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult))); ctx.stroke(); ctx.setLineDash([]); }
-    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),5,0,Math.PI*2); ctx.fillStyle='rgba(220,220,220,0.9)'; ctx.fill(); });
+    lineOf(callsBO, r=>r.vi_bid,   'rgba(58,176,122,0.7)', [3,3]);
+    lineOf(callsBO, r=>r.vi_offer, 'rgba(192,57,43,0.7)',  [3,3]);
   }
   if(showPuts){
-    if(soloUno){
-      drawS(putsBO,r=>r.vi_bid,'rgba(58,176,122,0.7)','rgba(58,176,122,0.9)',[3,3]);
-      drawS(putsBO,r=>r.vi_offer,'rgba(192,57,43,0.7)','rgba(192,57,43,0.9)',[3,3]);
-    }
-    const pUlt=puts.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
-    if(pUlt.length>=2){ ctx.strokeStyle='rgba(201,150,10,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult))); ctx.stroke(); ctx.setLineDash([]); }
-    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),5,0,Math.PI*2); ctx.fillStyle='rgba(201,150,10,0.9)'; ctx.fill(); });
+    lineOf(putsBO, r=>r.vi_bid,   'rgba(58,176,122,0.7)', [3,3]);
+    lineOf(putsBO, r=>r.vi_offer, 'rgba(192,57,43,0.7)',  [3,3]);
   }
+
+  // ── CAPA 2: línea + punto GRANDE del último operado (se dibuja ABAJO) ──
+  if(showCalls){
+    const cUlt=calls.filter(r=>r._iv_ult>0&&inView(r));
+    if(cUlt.length>=2) lineOf(cUlt, r=>r._iv_ult, 'rgba(220,220,220,0.7)', [3,3], 1.5);
+    cUlt.forEach(r=>{
+      ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),7,0,Math.PI*2);
+      ctx.fillStyle='rgba(220,220,220,0.92)'; ctx.fill();
+      ctx.strokeStyle='rgba(14,13,10,0.8)'; ctx.lineWidth=1; ctx.stroke();
+    });
+  }
+  if(showPuts){
+    const pUlt=puts.filter(r=>r._iv_ult>0&&inView(r));
+    if(pUlt.length>=2) lineOf(pUlt, r=>r._iv_ult, 'rgba(201,150,10,0.7)', [3,3], 1.5);
+    pUlt.forEach(r=>{
+      ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),7,0,Math.PI*2);
+      ctx.fillStyle='rgba(201,150,10,0.92)'; ctx.fill();
+      ctx.strokeStyle='rgba(14,13,10,0.8)'; ctx.lineWidth=1; ctx.stroke();
+    });
+  }
+
+  // ── CAPA 3: puntos chicos de bid/offer ENCIMA ──
+  // Cuando el VI operado coincide con el bid u offer, el punto verde/rojo
+  // queda ADENTRO del punto blanco/amarillo grande.
+  if(showCalls){
+    dotsOf(callsBO, r=>r.vi_bid,   'rgba(58,176,122,0.95)', 3);
+    dotsOf(callsBO, r=>r.vi_offer, 'rgba(192,57,43,0.95)',  3);
+  }
+  if(showPuts){
+    dotsOf(putsBO, r=>r.vi_bid,   'rgba(58,176,122,0.95)', 3);
+    dotsOf(putsBO, r=>r.vi_offer, 'rgba(192,57,43,0.95)',  3);
+  }
+
   // Leyenda
   let lx=pad.l; ctx.font='9px monospace'; ctx.textAlign='left';
   for(const [label,col,isDash] of legendItems){
@@ -834,7 +893,6 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     lx+=ctx.measureText(label).width+24;
   }
 }
-
 
 function renderCadena() {
   const rows = getFilteredRows();
@@ -877,7 +935,7 @@ function renderCadena() {
     <tbody>`;
 
   for (const r of rows) {
-    const isATM = r.moneyness === 'ATM'; // la sanitización ya la recalculó bien
+    const isATM = r.moneyness === 'ATM';
     const varCls = (r.var_prima_pct||0) >= 0 ? 'pos' : 'neg';
     const varOiCls = (r.var_oi_pct||0) >= 0 ? 'pos' : 'neg';
     const desvCls = (r.desvio_teorico||0) >= 0 ? 'pos' : 'neg';
@@ -1017,6 +1075,12 @@ function fmtN(v) {
 }
 
 // ── EVENT WIRING ───────────────────────────────────────────────────────────────
+function resetSmileZoom() {
+  state._smileZoomKey = null;
+  if (state.view === 'smile' && state.currentSuby) renderSmile();
+}
+window.resetSmileZoom = resetSmileZoom;
+
 function wireEvents() {
   document.getElementById('sidebar').addEventListener('click', e => {
     const btn = e.target.closest('.sb-btn');
