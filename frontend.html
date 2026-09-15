@@ -22,6 +22,7 @@ body{background:#0e0d0a;color:#e8e0cc;font-family:'Syne',sans-serif;font-size:13
 .header-pills{display:flex;gap:8px;align-items:center}
 .pill{font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 8px;border-radius:4px;border:0.5px solid #2a2510;color:#c8c0b0}
 .pill.live{border-color:#2d6a3e;color:#3ab07a;animation:pulse 2s infinite}
+.pill.err{border-color:#7a2e26;color:#c0392b}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
 .header-right{display:flex;gap:16px;align-items:center;font-family:'JetBrains Mono',monospace;font-size:11px;color:#a09880}
 .header-right .val{color:#e8e0cc;font-weight:500}
@@ -31,7 +32,7 @@ body{background:#0e0d0a;color:#e8e0cc;font-family:'Syne',sans-serif;font-size:13
 .main{display:grid;grid-template-columns:220px 1fr;height:calc(100vh - 45px)}
 
 /* ── SIDEBAR ── */
-.sidebar{background:#12100a;border-right:1px solid #2a2510;overflow-y:auto;padding:12px 0}
+.sidebar{background:#12100a;border-right:1px solid #2a2510;overflow-y:auto;padding:12px 0;scrollbar-width:thin;scrollbar-color:#2a2510 transparent}
 .sidebar::-webkit-scrollbar{width:3px}.sidebar::-webkit-scrollbar-thumb{background:#2a2510}
 .sb-section{margin-bottom:4px}
 .sb-label{padding:8px 14px 3px;font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:#706858;font-family:'JetBrains Mono',monospace;font-weight:600}
@@ -52,6 +53,7 @@ body{background:#0e0d0a;color:#e8e0cc;font-family:'Syne',sans-serif;font-size:13
 .meta-item span{color:#e8e0cc}
 .meta-item span.up{color:#3ab07a}
 .meta-item span.dn{color:#c0392b}
+.meta-item span.gold{color:#C9960A;font-weight:500}
 
 /* ── CONTROLS ── */
 .controls{display:flex;align-items:center;gap:12px;padding:8px 20px;border-bottom:1px solid #2a2510;background:#0e0d0a;flex-shrink:0;flex-wrap:wrap}
@@ -64,25 +66,27 @@ body{background:#0e0d0a;color:#e8e0cc;font-family:'Syne',sans-serif;font-size:13
 .tab-btn:first-child{border-radius:4px 0 0 4px}
 .tab-btn:last-child{border-radius:0 4px 4px 0}
 .tab-btn.active{background:#C9960A;color:#0e0d0a;border-color:#C9960A;font-weight:600}
+.csv-btn{margin-left:8px;padding:4px 12px;background:none;border:0.5px solid #2a2510;color:#a09880;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;border-radius:4px;transition:all .1s}
+.csv-btn:hover{border-color:#C9960A;color:#C9960A}
 
 /* ── CADENA TABLE ── */
-.content{flex:1;overflow:auto}
+.content{flex:1;overflow:auto;scrollbar-width:thin;scrollbar-color:#2a2510 transparent}
 .content::-webkit-scrollbar{width:4px;height:4px}.content::-webkit-scrollbar-thumb{background:#2a2510}
-.cadena-wrap{padding:0}
 table{width:100%;border-collapse:collapse;font-size:11px}
 thead th{position:sticky;top:0;background:#12100a;padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:#706858;border-bottom:1px solid #2a2510;white-space:nowrap;z-index:5}
-thead th:first-child{text-align:left}
+thead th:first-child{position:sticky;left:0;text-align:left;z-index:6}
 thead th.center{text-align:center}
-tbody tr{border-bottom:0.5px solid rgba(42,37,16,.5);transition:background .08s;cursor:pointer}
+tbody tr{border-bottom:0.5px solid rgba(42,37,16,.5);transition:background .08s}
 tbody tr:hover{background:#1a1710}
 tbody tr.atm{background:rgba(201,150,10,.04)}
 tbody tr.atm:hover{background:rgba(201,150,10,.08)}
 td{padding:5px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#c8c0b0;white-space:nowrap}
-td:first-child{text-align:left;color:#e8e0cc;font-weight:500}
+/* Columna Symbol sticky: fondos opacos que imitan el fondo de la fila */
+tbody td:first-child{position:sticky;left:0;background:#0e0d0a;z-index:4;text-align:left;color:#e8e0cc;font-weight:500}
+tbody tr.atm td:first-child{background:#131109}
+tbody tr:hover td:first-child{background:#1a1710}
+tbody tr.atm:hover td:first-child{background:#181507}
 td.center{text-align:center}
-td.pos{color:#3ab07a}
-td.neg{color:#c0392b}
-td.gold{color:#C9960A;font-weight:600}
 td.muted{color:#706858}
 .badge-itm{background:rgba(58,176,122,.1);color:#3ab07a;border:0.5px solid #2d6a3e;padding:1px 5px;border-radius:3px;font-size:9px}
 .badge-otm{background:rgba(90,78,42,.1);color:#a09880;border:0.5px solid #2a2510;padding:1px 5px;border-radius:3px;font-size:9px}
@@ -99,15 +103,15 @@ td.muted{color:#706858}
 .res-bar{height:3px;background:#2a2510;border-radius:2px;margin-top:3px}
 .res-bar-fill{height:3px;background:#C9960A;border-radius:2px;transition:width .3s}
 
-/* ── EMPTY ── */
+/* ── EMPTY / LOADING ── */
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#706858;gap:10px;text-align:center;padding:40px}
 .empty p{font-size:13px;line-height:1.6;max-width:280px}
-
-/* ── LOADING ── */
 .loading{display:flex;align-items:center;justify-content:center;height:100%;font-family:'JetBrains Mono',monospace;font-size:11px;color:#706858}
 
-/* ── FECHA BADGE ── */
-.fecha-badge{font-family:'JetBrains Mono',monospace;font-size:9px;padding:2px 7px;border-radius:3px;background:rgba(201,150,10,.1);color:#C9960A;border:0.5px solid rgba(201,150,10,.2)}
+/* ── Colores genéricos (antes scopeados a td — van al final para ganar a .res-val) ── */
+.pos{color:#3ab07a}
+.neg{color:#c0392b}
+.gold{color:#C9960A;font-weight:600}
 </style>
 </head>
 <body>
@@ -140,12 +144,10 @@ td.muted{color:#706858}
   </header>
 
   <div class="main">
-    <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar">
       <div class="loading" style="height:200px">Cargando...</div>
     </aside>
 
-    <!-- PANEL -->
     <section class="panel">
       <div id="suby-header" class="suby-header" style="display:none">
         <div class="suby-title" id="suby-name">—</div>
@@ -155,7 +157,7 @@ td.muted{color:#706858}
       <div class="controls" id="controls" style="display:none">
         <div class="ctrl-group">
           <span class="ctrl-lbl">Tipo</span>
-          <select class="ctrl-select" id="ctrl-tipo" onchange="renderCadena()">
+          <select class="ctrl-select" id="ctrl-tipo">
             <option value="">Todos</option>
             <option value="CALL">CALL</option>
             <option value="PUT">PUT</option>
@@ -163,25 +165,24 @@ td.muted{color:#706858}
         </div>
         <div class="ctrl-group">
           <span class="ctrl-lbl">Vencimiento</span>
-          <select class="ctrl-select" id="ctrl-vto" onchange="renderCadena()">
+          <select class="ctrl-select" id="ctrl-vto">
             <option value="">Todos</option>
-            <option value="2026-10-16">Octubre 16</option>
-            <option value="2026-12-18">Diciembre 18</option>
           </select>
         </div>
         <div class="ctrl-group">
           <span class="ctrl-lbl">Mostrar</span>
-          <select class="ctrl-select" id="ctrl-show" onchange="renderCadena()">
+          <select class="ctrl-select" id="ctrl-show">
             <option value="all">Todos los strikes</option>
             <option value="traded">Solo con operaciones</option>
             <option value="oi">Con open interest</option>
           </select>
         </div>
         <div class="tab-btns">
-          <button class="tab-btn active" onclick="switchView('cadena',this)">Cadena</button>
-          <button class="tab-btn" onclick="switchView('smile',this)">IV Smile</button>
-          <button class="tab-btn" onclick="switchView('resumen',this)">Resumen</button>
+          <button class="tab-btn active" data-view="cadena">Cadena</button>
+          <button class="tab-btn" data-view="smile">IV Smile</button>
+          <button class="tab-btn" data-view="resumen">Resumen</button>
         </div>
+        <button class="csv-btn" id="btn-csv" title="Descargar cadena filtrada como CSV">↓ CSV</button>
       </div>
 
       <div class="content" id="content">
@@ -201,6 +202,44 @@ const API = 'https://web-production-2a938.up.railway.app';
 const SUPABASE_URL  = 'https://zqnxkgqalhhybcnzgjfk.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpxbnhrZ3FhbGhoeWJjbnpnamZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg5Mzk3MDEsImV4cCI6MjA5NDUxNTcwMX0.GD0RHfLGzplLhL1E-_GUHh3HXSNsZsvFi436wcm2tD4';
 
+const ATM_TOL = 0.01; // tolerancia ATM unificada (±1% del spot)
+const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+// ── HELPERS ────────────────────────────────────────────────────────────────────
+const esc = s => String(s ?? '').replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// Polyfill liviano para AbortSignal.timeout (Safari < 16.4)
+if (typeof AbortSignal !== 'undefined' && !AbortSignal.timeout) {
+  AbortSignal.timeout = ms => {
+    const c = new AbortController();
+    setTimeout(() => c.abort(new DOMException('Timeout','TimeoutError')), ms);
+    return c.signal;
+  };
+}
+
+// fetch + chequeo HTTP + timeout
+function fjson(url, opts = {}) {
+  return fetch(url, { ...opts, signal: opts.signal ?? AbortSignal.timeout(15000) })
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+}
+
+function vtoLabel(v) {
+  const d = new Date(v + 'T00:00:00');
+  return isNaN(d) ? v : `${MESES[d.getMonth()]} ${d.getDate()}`;
+}
+
+function showEmpty(msg) {
+  const el = document.getElementById('content');
+  el.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'empty';
+  const p = document.createElement('p');
+  p.textContent = msg; // textContent = sin inyección
+  div.appendChild(p);
+  el.appendChild(div);
+}
+
 // ── STATE ──────────────────────────────────────────────────────────────────────
 let state = {
   subyacentes: [],
@@ -209,8 +248,10 @@ let state = {
   currentSuby: null,
   view: 'cadena',
 };
+let cadenaAbort = null;      // FIX: cancela requests obsoletos al cambiar de subyacente
+let lastCadenaJson = null;   // FIX: evita re-render si los datos no cambiaron
 
-// ── AUTH ───────────────────────────────────────────────────────────────────────
+// ── AUTH (se integra más adelante desde el portal) ────────────────────────────
 async function validarToken(token) {
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/validate_session`, {
@@ -230,78 +271,122 @@ async function validarToken(token) {
   }
 }
 
-async function init() {
-  document.getElementById('app').style.display = 'block';
-  await loadData();
-  setInterval(loadData, 60000);
-}
-
 // ── DATA ───────────────────────────────────────────────────────────────────────
 async function loadData() {
+  if (document.hidden) return; // pausa polling con pestaña en background
+
   try {
-    const [subRes, resRes] = await Promise.all([
-      fetch(`${API}/api/opciones/subyacentes`),
-      fetch(`${API}/api/opciones/resumen`),
+    const [subRes, resRes] = await Promise.allSettled([
+      fjson(`${API}/api/opciones/subyacentes`),
+      fjson(`${API}/api/opciones/resumen`),
     ]);
-    const subData = await subRes.json();
-    const resData = await resRes.json();
 
-    state.subyacentes = subData.data || [];
-    state.resumen     = resData || {};
+    if (subRes.status === 'fulfilled') state.subyacentes = subRes.value.data || [];
+    if (resRes.status === 'fulfilled') state.resumen   = resRes.value || {};
+    if (subRes.status === 'rejected' && resRes.status === 'rejected') throw new Error('Sin respuesta del servidor');
 
-    // Header
-    const fecha = subData.fecha || resData.fecha || '—';
+    const fecha = (subRes.status==='fulfilled' && subRes.value.fecha) || state.resumen.fecha || '—';
+    const totalOps = state.subyacentes.reduce((a,s) => a + (s.calls||0) + (s.puts||0), 0); // FIX: sin NaN
+
     document.getElementById('h-fecha').textContent = fecha;
-    document.getElementById('h-total').textContent = state.subyacentes.reduce((a,s)=>a+s.calls+s.puts,0);
+    document.getElementById('h-total').textContent = totalOps;
     document.getElementById('fecha-pill').textContent = fecha;
-    document.getElementById('live-pill').textContent = '● en vivo';
+    const pill = document.getElementById('live-pill');
+    pill.textContent = '● en vivo';
+    pill.classList.add('live'); pill.classList.remove('err');
     document.getElementById('h-updated').textContent = 'Act: ' + new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
 
     buildSidebar();
-    if (state.currentSuby) {
-      await loadCadena(state.currentSuby);
-    }
+    if (state.currentSuby) await loadCadena(state.currentSuby, true); // silent: no resetea scroll
   } catch(e) {
-    document.getElementById('live-pill').textContent = '● error';
+    const pill = document.getElementById('live-pill');
+    pill.textContent = '● error';
+    pill.classList.remove('live'); pill.classList.add('err');
     console.error(e);
   }
 }
 
-async function loadCadena(suby) {
-  state.currentSuby = suby;
-  document.getElementById('suby-header').style.display = 'block';
-  document.getElementById('controls').style.display = 'flex';
-  document.getElementById('content').innerHTML = '<div class="loading">Cargando cadena...</div>';
+async function loadCadena(suby, silent = false) {
+  // FIX: abortar request anterior si el usuario cambia rápido de subyacente
+  cadenaAbort?.abort();
+  const ctrl = new AbortController();
+  cadenaAbort = ctrl;
 
-  // Activar sidebar
+  const content = document.getElementById('content');
+  const scrollTop = content.scrollTop;
+  if (!silent) {
+    content.innerHTML = '<div class="loading">Cargando cadena...</div>';
+    lastCadenaJson = null;
+  }
+
   document.querySelectorAll('.sb-btn').forEach(b => b.classList.toggle('active', b.dataset.suby === suby));
 
   try {
-    const r = await fetch(`${API}/api/opciones/cadena?subyacente=${suby}`);
-    const d = await r.json();
+    const d = await fjson(`${API}/api/opciones/cadena?subyacente=${encodeURIComponent(suby)}`, { signal: ctrl.signal });
+    if (ctrl.signal.aborted) return;
+
+    state.currentSuby = suby;
     state.cadena = d.data || [];
 
-    // Header del subyacente
-    const s = state.subyacentes.find(x => x.subyacente === suby) || {};
-    const sample = state.cadena.find(x => x.precio_suby) || {};
-    const pcRatio = state.resumen.put_call_ratio?.[suby];
+    const json = JSON.stringify(state.cadena);
+    const unchanged = silent && json === lastCadenaJson;
+    lastCadenaJson = json;
 
-    document.getElementById('suby-name').textContent = suby;
-    document.getElementById('suby-meta').innerHTML = `
-      <div class="meta-item">Precio suby: <span class="gold">$${fmt(sample.precio_suby)}</span></div>
-      <div class="meta-item">Calls: <span>${s.calls||0}</span></div>
-      <div class="meta-item">Puts: <span>${s.puts||0}</span></div>
-      <div class="meta-item">Vol ARS: <span>${fmtM(s.volumen_ars)}</span></div>
-      <div class="meta-item">OI: <span>${fmtN(s.open_interest)}</span></div>
-      ${pcRatio!=null?`<div class="meta-item">Put/Call: <span class="${pcRatio>1?'up':'dn'}">${pcRatio.toFixed(2)}</span></div>`:''}
-      <div class="meta-item">Tasa libre: <span>${sample.tasa_libre||'—'}%</span></div>
-      <div class="meta-item">Días vto: <span>${sample.dias_vto||'—'}</span></div>
-    `;
+    document.getElementById('suby-header').style.display = 'block';
+    document.getElementById('controls').style.display = 'flex';
 
-    renderView();
+    updateSubyHeader(suby);
+    populateVtos();
+
+    if (!unchanged) renderView();
+    if (silent) content.scrollTop = scrollTop; // FIX: el refresh de 60s no salta al top
   } catch(e) {
-    document.getElementById('content').innerHTML = `<div class="empty"><p>Error cargando cadena: ${e.message}</p></div>`;
+    if (e.name === 'AbortError') return;
+    showEmpty('Error cargando cadena: ' + e.message);
   }
+}
+
+function updateSubyHeader(suby) {
+  const s = state.subyacentes.find(x => x.subyacente === suby) || {};
+  const sample = state.cadena.find(x => x.precio_suby) || {};
+  const pcRatio = state.resumen.put_call_ratio?.[suby];
+  const tasa = state.cadena.find(x => x.tasa_libre != null)?.tasa_libre;
+
+  // FIX: dias_vto respetando el filtro de vencimiento; si es "Todos", mostrar rango
+  const vtoSel = document.getElementById('ctrl-vto').value;
+  let diasTxt = '—';
+  if (vtoSel) {
+    const r = state.cadena.find(x => x.vencimiento === vtoSel && x.dias_vto != null);
+    if (r) diasTxt = r.dias_vto;
+  } else {
+    const dv = state.cadena.map(r => r.dias_vto).filter(v => v != null);
+    if (dv.length) {
+      const mn = Math.min(...dv), mx = Math.max(...dv);
+      diasTxt = mn === mx ? mn : `${mn}–${mx}`;
+    }
+  }
+
+  document.getElementById('suby-name').textContent = suby;
+  document.getElementById('suby-meta').innerHTML = `
+    <div class="meta-item">Precio suby: <span class="gold">$${fmt(sample.precio_suby)}</span></div>
+    <div class="meta-item">Calls: <span>${s.calls||0}</span></div>
+    <div class="meta-item">Puts: <span>${s.puts||0}</span></div>
+    <div class="meta-item">Vol ARS: <span>${fmtM(s.volumen_ars)}</span></div>
+    <div class="meta-item">OI: <span>${fmtN(s.open_interest)}</span></div>
+    ${pcRatio!=null?`<div class="meta-item">Put/Call: <span class="${pcRatio>1?'up':'dn'}">${pcRatio.toFixed(2)}</span></div>`:''}
+    <div class="meta-item">Tasa libre: <span>${tasa!=null?tasa+'%':'—'}</span></div>
+    <div class="meta-item">Días vto: <span>${diasTxt}</span></div>
+  `;
+}
+
+// FIX: vencimientos poblados dinámicamente desde los datos
+function populateVtos() {
+  const sel = document.getElementById('ctrl-vto');
+  const vtos = [...new Set(state.cadena.map(r => r.vencimiento).filter(Boolean))].sort();
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">Todos</option>' +
+    vtos.map(v => `<option value="${esc(v)}">${vtoLabel(v)}</option>`).join('');
+  sel.value = vtos.includes(prev) ? prev : '';
 }
 
 // ── SIDEBAR ────────────────────────────────────────────────────────────────────
@@ -312,7 +397,6 @@ function buildSidebar() {
     return;
   }
 
-  // Ordenar por volumen
   const sorted = [...state.subyacentes].sort((a,b) => b.volumen_ars - a.volumen_ars);
   const maxVol = sorted[0]?.volumen_ars || 1;
 
@@ -320,9 +404,8 @@ function buildSidebar() {
   for (const s of sorted) {
     const pct = Math.round(s.volumen_ars / maxVol * 100);
     html += `
-      <button class="sb-btn ${s.subyacente===state.currentSuby?'active':''}"
-              data-suby="${s.subyacente}" onclick="loadCadena('${s.subyacente}')">
-        <span>${s.subyacente}</span>
+      <button class="sb-btn ${s.subyacente===state.currentSuby?'active':''}" data-suby="${esc(s.subyacente)}">
+        <span>${esc(s.subyacente)}</span>
         <span class="sb-vol">${fmtM(s.volumen_ars)}</span>
       </button>
       <div style="margin:0 14px 2px;height:2px;background:#1a1710;border-radius:1px">
@@ -331,6 +414,26 @@ function buildSidebar() {
   }
   html += '</div>';
   sb.innerHTML = html;
+  // Sin onclick inline: la delegación está cableada una sola vez en wireEvents()
+}
+
+// ── FILTROS COMPARTIDOS (cadena + CSV) ─────────────────────────────────────────
+function getFilteredRows() {
+  const tipo = document.getElementById('ctrl-tipo').value;
+  const vto  = document.getElementById('ctrl-vto').value;
+  const show = document.getElementById('ctrl-show').value;
+
+  let rows = state.cadena;
+  if (tipo) rows = rows.filter(r => r.tipo === tipo);
+  if (vto)  rows = rows.filter(r => r.vencimiento === vto);
+  if (show === 'traded') rows = rows.filter(r => (r.volumen_ars||0) > 0);
+  if (show === 'oi')     rows = rows.filter(r => (r.open_interest||0) > 0);
+
+  // Orden: strike, luego tipo, luego vencimiento
+  return [...rows].sort((a,b) =>
+    (a.strike||0) - (b.strike||0) ||
+    (a.tipo||'').localeCompare(b.tipo||'') ||
+    (a.vencimiento||'').localeCompare(b.vencimiento||''));
 }
 
 // ── VIEWS ──────────────────────────────────────────────────────────────────────
@@ -352,9 +455,9 @@ function renderSmile() {
   const show = document.getElementById('ctrl-show').value;
   let rows = state.cadena.filter(r => r.vol_implicita > 0 && r.strike > 0);
   if (vto)   rows = rows.filter(r => r.vencimiento === vto);
-  if (show === 'traded') rows = rows.filter(r => r.volumen_ars > 0);
-  if (show === 'oi')     rows = rows.filter(r => r.open_interest > 0);
-  if (!rows.length) { document.getElementById('content').innerHTML = '<div class="empty"><p>Sin datos de IV</p></div>'; return; }
+  if (show === 'traded') rows = rows.filter(r => (r.volumen_ars||0) > 0);
+  if (show === 'oi')     rows = rows.filter(r => (r.open_interest||0) > 0);
+  if (!rows.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
 
   const calls = rows.filter(r => r.tipo==='CALL').sort((a,b)=>a.strike-b.strike);
   const puts  = rows.filter(r => r.tipo==='PUT').sort((a,b)=>a.strike-b.strike);
@@ -365,12 +468,14 @@ function renderSmile() {
   const atmRow = rows.reduce((b,r)=>Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null);
   const otmP = puts.filter(r=>r.strike<spot*0.95).at(-1);
   const otmC = calls.filter(r=>r.strike>spot*1.05)[0];
-  const skew = otmP&&otmC ? (otmP.vol_implicita-otmC.vol_implicita).toFixed(2) : null;
+  const skew = otmP&&otmC ? +(otmP.vol_implicita-otmC.vol_implicita).toFixed(2) : null; // FIX: numérico
+  // FIX: VH tomado de la primera fila QUE TENGA el dato
+  const vh = rows.map(r=>r.vol_hist_40r).find(v=>v!=null);
 
   document.getElementById('content').innerHTML = `
     <div style="padding:16px 20px;overflow:auto;height:100%">
       <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;margin-bottom:14px">
-        <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;margin-bottom:8px">IV Smile — ${state.currentSuby}</div>
+        <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;margin-bottom:8px">IV Smile — ${esc(state.currentSuby)}</div>
         <canvas id="sc" width="1200" height="300" style="width:100%;height:300px"></canvas>
         <div id="stt" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#c8c0b0;margin-top:4px;min-height:14px"></div>
       </div>
@@ -381,7 +486,7 @@ function renderSmile() {
           ['IV Prom',ivAvg+'%','#C9960A'],
           ['IV ATM',atmRow?atmRow.vol_implicita.toFixed(2)+'%':'—','#C9960A'],
           ['Skew Put-Call',skew!=null?(skew>0?'+':'')+skew+'%':'—',skew>0?'#c0392b':skew<0?'#3ab07a':''],
-          ['VH 40r',(rows[0]?.vol_hist_40r?.toFixed(2)||'—')+'%',''],
+          ['VH 40r',vh!=null?vh.toFixed(2)+'%':'—',''],
           ['Strikes',allIV.length,''],
           ['Spot','$'+fmt(spot),'#C9960A'],
         ].map(([l,v,c])=>`<div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
@@ -452,28 +557,16 @@ function renderSmile() {
     let best=null, bd=20;
     rows.forEach(r=>{ const d=Math.hypot(xs(r.strike)-mx,ys(r.vol_implicita)-my); if(d<bd){bd=d;best=r;} });
     document.getElementById('stt').innerHTML = best
-      ? `<span style="color:${best.tipo==='CALL'?'#3ab07a':'#c0392b'}">${best.tipo}</span> · ${best.symbol} · $${fmt(best.strike)} · IV <span style="color:#C9960A">${best.vol_implicita.toFixed(2)}%</span> · Último $${fmt(best.ultimo_precio)} · OI ${fmtN(best.open_interest)}`
+      ? `<span style="color:${best.tipo==='CALL'?'#3ab07a':'#c0392b'}">${esc(best.tipo)}</span> · ${esc(best.symbol)} · $${fmt(best.strike)} · IV <span style="color:#C9960A">${best.vol_implicita.toFixed(2)}%</span> · Último $${fmt(best.ultimo_precio)} · OI ${fmtN(best.open_interest)}`
       : '';
   };
   canvas.onmouseleave = ()=>{ document.getElementById('stt').innerHTML=''; };
 }
 
 function renderCadena() {
-  const tipo  = document.getElementById('ctrl-tipo').value;
-  const vto   = document.getElementById('ctrl-vto').value;
-  const show  = document.getElementById('ctrl-show').value;
-
-  let rows = state.cadena;
-  if (tipo)  rows = rows.filter(r => r.tipo === tipo);
-  if (vto)   rows = rows.filter(r => r.vencimiento === vto);
-  if (show === 'traded') rows = rows.filter(r => r.volumen_ars > 0);
-  if (show === 'oi')     rows = rows.filter(r => r.open_interest > 0);
-
-  // Ordenar por strike
-  rows = [...rows].sort((a,b) => (a.strike||0) - (b.strike||0));
-
+  const rows = getFilteredRows();
   if (!rows.length) {
-    document.getElementById('content').innerHTML = '<div class="empty"><p>Sin opciones para los filtros seleccionados</p></div>';
+    showEmpty('Sin opciones para los filtros seleccionados');
     return;
   }
 
@@ -497,30 +590,31 @@ function renderCadena() {
       <th>P.Teórico</th>
       <th>Desvío</th>
       <th>IV%</th>
-      <th>VH%</th>
-      <th>Δ</th>
-      <th>Γ</th>
-      <th>Θ</th>
-      <th>Vega</th>
-      <th>Rho</th>
+      <th title="Volatilidad histórica 40 ruedas">VH%</th>
+      <th title="Delta">Δ</th>
+      <th title="Gamma">Γ</th>
+      <th title="Theta (por día)">Θ</th>
+      <th title="Vega (por 1% de IV)">Vega</th>
+      <th title="Rho (por 1% de tasa)">Rho</th>
       <th>Vto</th>
     </tr></thead>
     <tbody>`;
 
   for (const r of rows) {
-    const isATM = r.moneyness === 'ATM' || (precioSuby && Math.abs((r.strike - precioSuby)/precioSuby) < 0.01);
+    // ATM unificado: cálculo local con tolerancia, con fallback al campo del backend
+    const isATM = (precioSuby && r.strike && Math.abs((r.strike - precioSuby)/precioSuby) < ATM_TOL) || r.moneyness === 'ATM';
     const varCls = (r.var_prima_pct||0) >= 0 ? 'pos' : 'neg';
     const varOiCls = (r.var_oi_pct||0) >= 0 ? 'pos' : 'neg';
     const desvCls = (r.desvio_teorico||0) >= 0 ? 'pos' : 'neg';
     const mBadge = r.moneyness === 'ATM' ? 'badge-atm' : r.moneyness === 'ITM' ? 'badge-itm' : 'badge-otm';
     const tipoCls = r.tipo === 'CALL' ? 'pos' : 'neg';
-    const vtoLabel = r.vencimiento === '2026-10-16' ? 'Oct' : r.vencimiento === '2026-12-18' ? 'Dic' : r.vencimiento||'—';
+    const vtoLabelTxt = r.vencimiento ? vtoLabel(r.vencimiento) : '—';
 
-    html += `<tr class="${isATM?'atm':''}" onclick="">
-      <td>${r.symbol}</td>
-      <td class="center ${tipoCls}">${r.tipo||'—'}</td>
+    html += `<tr class="${isATM?'atm':''}">
+      <td>${esc(r.symbol)}</td>
+      <td class="center ${tipoCls}">${esc(r.tipo)||'—'}</td>
       <td class="gold">$${fmt(r.strike)}</td>
-      <td class="center"><span class="${mBadge}">${r.moneyness||'—'}</span></td>
+      <td class="center"><span class="${mBadge}">${esc(r.moneyness)||'—'}</span></td>
       <td>${r.ultimo_precio!=null?'$'+fmt(r.ultimo_precio):'-'}</td>
       <td class="muted">${r.apertura_prima!=null?'$'+fmt(r.apertura_prima):'-'}</td>
       <td class="muted">${r.min_prima!=null?'$'+fmt(r.min_prima):'-'}</td>
@@ -539,7 +633,7 @@ function renderCadena() {
       <td class="${(r.theta||0)<0?'neg':''}">${r.theta!=null?r.theta.toFixed(2):'-'}</td>
       <td>${r.vega!=null?r.vega.toFixed(2):'-'}</td>
       <td class="muted">${r.rho!=null?r.rho.toFixed(2):'-'}</td>
-      <td class="muted">${vtoLabel}</td>
+      <td class="muted">${esc(vtoLabelTxt)}</td>
     </tr>`;
   }
 
@@ -557,44 +651,43 @@ function renderResumen() {
 
   let html = '<div class="resumen-grid">';
 
-  // Ranking volumen
   html += `<div class="res-card">
     <div class="res-title">Ranking Volumen ARS</div>`;
   for (const r of rankVol.slice(0,15)) {
     const pct = r.volumen_ars / maxVol * 100;
     html += `<div class="res-row">
-      <span class="res-suby">${r.subyacente}</span>
+      <span class="res-suby">${esc(r.subyacente)}</span>
       <span class="res-val">${fmtM(r.volumen_ars)}</span>
     </div>
     <div class="res-bar"><div class="res-bar-fill" style="width:${pct}%"></div></div>`;
   }
   html += '</div>';
 
-  // Ranking OI
   html += `<div class="res-card">
     <div class="res-title">Ranking Open Interest</div>`;
   for (const r of rankOI.slice(0,15)) {
     const pct = r.open_interest / maxOI * 100;
     html += `<div class="res-row">
-      <span class="res-suby">${r.subyacente}</span>
+      <span class="res-suby">${esc(r.subyacente)}</span>
       <span class="res-val">${fmtN(r.open_interest)}</span>
     </div>
     <div class="res-bar"><div class="res-bar-fill" style="width:${pct}%"></div></div>`;
   }
   html += '</div>';
 
-  // Put/Call ratio
   const pcEntries = Object.entries(pc).filter(([,v])=>v!=null).sort((a,b)=>b[1]-a[1]);
   if (pcEntries.length) {
     html += `<div class="res-card" style="grid-column:1/-1">
       <div class="res-title">Ratio Put/Call por Subyacente</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:8px">`;
     for (const [suby, ratio] of pcEntries) {
-      const cls = ratio > 1 ? 'neg' : ratio < 0.5 ? 'pos' : '';
+      // FIX: umbrales consistentes color/etiqueta (0.7 / 1.0)
+      const cls = ratio >= 1 ? 'neg' : ratio <= 0.7 ? 'pos' : '';
+      const tag = ratio >= 1 ? 'Bearish' : ratio < 0.7 ? 'Bullish' : 'Neutral';
       html += `<div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
-        <div style="font-size:12px;font-weight:600;color:#e8e0cc;margin-bottom:2px">${suby}</div>
+        <div style="font-size:12px;font-weight:600;color:#e8e0cc;margin-bottom:2px">${esc(suby)}</div>
         <div class="res-val ${cls}" style="font-size:14px">${ratio.toFixed(2)}</div>
-        <div style="font-size:9px;color:#706858;margin-top:2px">${ratio>1?'Bearish':ratio<0.7?'Bullish':'Neutral'}</div>
+        <div style="font-size:9px;color:#706858;margin-top:2px">${tag}</div>
       </div>`;
     }
     html += '</div></div>';
@@ -602,6 +695,27 @@ function renderResumen() {
 
   html += '</div>';
   document.getElementById('content').innerHTML = html;
+}
+
+// ── EXPORT CSV ─────────────────────────────────────────────────────────────────
+function exportCsv() {
+  const rows = getFilteredRows();
+  if (!rows.length) return;
+  const cols = ['symbol','tipo','strike','moneyness','ultimo_precio','apertura_prima','min_prima','max_prima','var_prima_pct','volumen_ars','cant_ops','open_interest','var_oi_pct','precio_teorico','desvio_teorico','vol_implicita','vol_hist_40r','delta','gamma','theta','vega','rho','vencimiento','dias_vto'];
+  const head = ['Symbol','Tipo','Strike','Moneyness','Ultimo','Apertura','Min','Max','Var%','Vol ARS','Ops','OI','Var OI%','P.Teorico','Desvio','IV%','VH%','Delta','Gamma','Theta','Vega','Rho','Vencimiento','Dias Vto'];
+  // Separador ';' y coma decimal → abre directo en Excel es-AR. BOM para UTF-8.
+  const cell = v => {
+    if (v == null) return '';
+    const s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
+    return /[";\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  };
+  const csv = '\uFEFF' + [head.join(';'), ...rows.map(r => cols.map(cl => cell(r[cl])).join(';'))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `cadena_${state.currentSuby}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ── FORMATTERS ─────────────────────────────────────────────────────────────────
@@ -622,7 +736,38 @@ function fmtN(v) {
   return v.toLocaleString('es-AR');
 }
 
+// ── EVENT WIRING (una sola vez, sobrevive a innerHTML) ─────────────────────────
+function wireEvents() {
+  // Delegación en sidebar (los botones se regeneran con innerHTML)
+  document.getElementById('sidebar').addEventListener('click', e => {
+    const btn = e.target.closest('.sb-btn');
+    if (btn) loadCadena(btn.dataset.suby);
+  });
+  // Controles
+  document.getElementById('ctrl-tipo').addEventListener('change', renderView);
+  document.getElementById('ctrl-vto').addEventListener('change', renderView);
+  document.getElementById('ctrl-show').addEventListener('change', renderView);
+  document.querySelectorAll('.tab-btn').forEach(b =>
+    b.addEventListener('click', () => switchView(b.dataset.view, b)));
+  document.getElementById('btn-csv').addEventListener('click', exportCsv);
+  // Refresh inmediato al volver a la pestaña
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) loadData(); });
+  // Canvas del smile responsivo
+  let rsT;
+  window.addEventListener('resize', () => {
+    clearTimeout(rsT);
+    rsT = setTimeout(() => { if (state.view === 'smile' && state.currentSuby) renderSmile(); }, 150);
+  });
+}
+
 // ── INIT ───────────────────────────────────────────────────────────────────────
+async function init() {
+  wireEvents();
+  document.getElementById('app').style.display = 'block';
+  await loadData();
+  setInterval(loadData, 60000);
+}
+
 init();
 </script>
 </body>
