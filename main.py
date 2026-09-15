@@ -1,9 +1,10 @@
 import os, asyncio, httpx, io, re, json
+from collections import Counter
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, UploadFile, File, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 try:
     import pdfplumber
@@ -164,6 +165,104 @@ def _pg_load_opciones(fecha: str = None):
         print(f"PG load opciones error: {e}")
         return []
 
+# ── NUEVO: Mapeo prefijo de opción → subyacente ────────────────────────────────
+# La convención BYMA es estable: ticker de opción = prefijo + C/V + strike + serie.
+# Ej: GFGC4200OC → GFG + C + 4200 + OC (CALL 4200, serie octubre)
+# Este dict es LA fuente de verdad para asignar subyacente (el encabezado del PDF
+# se mezcla entre secciones: CRES/COME, TXAR/TRAN). Si aparece un prefijo nuevo,
+# se ve en /admin/debug-symbols y se agrega acá.
+OPCION_MAP = {
+    # Panel Merval
+    "GFG":  "GGAL",   # Grupo Financiero Galicia
+    "GGAL": "GGAL",   # por si el PDF usa el ticker completo
+    "YPF":  "YPFD",
+    "YPFD": "YPFD",
+    "BBA":  "BBAR",
+    "BBAR": "BBAR",
+    "TXA":  "TXAR",
+    "TXAR": "TXAR",
+    "MET":  "METR",
+    "METR": "METR",
+    "CRO":  "CRES",   # Cresud
+    "CRE":  "CRES",   # Cresud (variante)
+    "CRES": "CRES",
+    "SUP":  "SUPV",
+    "SUPV": "SUPV",
+    "TGS":  "TGSU2",
+    "TGSU": "TGSU2",  # por si el prefijo incluye la U
+    "EDN":  "EDN",
+    "VIST": "VIST",
+    "VIS":  "VIST",
+    "BMK":  "BYMA",   # BYMA — verificar con /admin/debug-symbols
+    "BYM":  "BYMA",
+    "BYMA": "BYMA",
+    # Resto del panel / líquidos
+    "ALU":  "ALUA",
+    "ALUA": "ALUA",
+    "BMA":  "BMA",
+    "TRA":  "TRAN",   # Transportadora Gas del Norte
+    "TRAN": "TRAN",
+    "COM":  "COME",
+    "COME": "COME",
+    "PAM":  "PAMP",
+    "PAMP": "PAMP",
+    "LOM":  "LOMA",
+    "LOMA": "LOMA",
+    "MIR":  "MIRG",
+    "MIRG": "MIRG",
+    "IRS":  "IRSA",
+    "IRSA": "IRSA",
+    "IRC":  "IRCP",
+    "CEP":  "CEPU",
+    "CEPU": "CEPU",
+    "VAL":  "VALO",
+    "VALO": "VALO",
+    "TGN":  "TGNO4",
+    "AUS":  "AUSO",
+    "OES":  "OEST",
+    "GAL":  "GAMI",
+}
+
+# Símbolo BYMA: prefijo + C/V + strike (decimales opcionales) + serie opcional
+RE_OPCION = re.compile(r'^([A-Z0-9]+?)([CV])(\d{2,7}(?:\.\d+)?)\.?([A-Z]{1,2})?$')
+
+def parse_symbol(sym: str):
+    """Divide el símbolo: GFGC4200OC → ('GFG','CALL',4200.0,'OC')."""
+    m = RE_OPCION.match((sym or '').strip().upper())
+    if not m: return None
+    pref, cv, strike, serie = m.groups()
+    return pref, ('CALL' if cv == 'C' else 'PUT'), float(strike), (serie or '')
+
+def resolve_suby(pref: str):
+    """Resuelve el subyacente desde el prefijo, probando truncados (TGSU→TGS)."""
+    if pref in OPCION_MAP: return OPCION_MAP[pref]
+    for L in (4, 3):
+        if len(pref) >= L and pref[:L] in OPCION_MAP:
+            return OPCION_MAP[pref[:L]]
+    return None
+
+# ── NUEVO: sanity check por fila (IVs/griegas basura del PDF) ──────────────────
+def _sanity_fix_row(r: dict):
+    # Primas negativas no existen
+    for f in ("apertura_prima", "min_prima", "max_prima", "ultimo_precio", "precio_teorico"):
+        if r.get(f) is not None and r[f] < 0:
+            r[f] = None
+    # Teórico <= 0 = solver roto → teórico y desvío no confiables
+    if r.get("precio_teorico") is not None and r["precio_teorico"] <= 0:
+        r["precio_teorico"] = None
+        r["desvio_teorico"] = None
+    # IV imposible = solver roto → IV y griegas derivadas no confiables
+    iv = r.get("vol_implicita")
+    if iv is not None and not (0.5 <= iv <= 300):
+        r["vol_implicita"] = None
+        for f in ("delta", "gamma", "theta", "vega", "rho"):
+            r[f] = None
+    # Gamma negativa en un CALL es imposible
+    if r.get("tipo") == "CALL" and r.get("gamma") is not None and r["gamma"] < 0:
+        for f in ("delta", "gamma", "theta", "vega", "rho"):
+            r[f] = None
+    return r
+
 # ── Parser PDF IAMC ────────────────────────────────────────────────────────────
 def _pf(v):
     if v is None: return None
@@ -180,23 +279,16 @@ def _pi(v):
 def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
     """
     Parsea el PDF de IAMC.
+    FIX: el subyacente se resuelve desde el SÍMBOLO de la opción (OPCION_MAP),
+    no desde el encabezado de página, que se mezcla entre secciones.
     La tabla tiene 78 columnas, cada campo ocupa 3 celdas (valor, vacío, vacío).
-    Mapeo de columnas:
-      0=Symbol, 3=Strike, 6=Dist ITM/OTM, 8=Moneyness, 11=PrecioSuby,
-      14=AperturaPrima, 19=MinPrima, 22=MaxPrima, 25=UltimoPrecio,
-      28=VarPrima%, 33=HoraUltimo, 36=VolumenARS, 39=CantOps,
-      42=OI, 45=VarOI%, 48=PrecioTeorico, 51=DesvioTeorico,
-      54=ValorTemporal, 57=VolHist40r, 60=VolImplicita,
-      63=Delta, 66=Gamma, 69=Theta, 72=Vega, 75=Rho
     """
     if not HAS_PDF: return [], {}, None
     rows = []
-    resumen_vol = {}
-    resumen_oi  = {}
-    resumen_pc  = {}
-    fecha_str   = None
+    resumen_vol, resumen_oi = {}, {}
+    resumen_pc, resumen_pc_oi = {}, {}
+    fecha_str = None
 
-    # Mapeo col_index → field_name
     COL_MAP = {
         0:  "symbol",
         3:  "strike",
@@ -225,12 +317,13 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
         75: "rho",
     }
     STR_FIELDS  = {"symbol", "moneyness", "hora_ultimo", "distancia_itm_otm"}
-    FLOAT_FIELDS = set(COL_MAP.values()) - STR_FIELDS - {"symbol", "cant_ops", "open_interest"}
     INT_FIELDS  = {"cant_ops", "open_interest"}
+
+    mixed, unmapped = [], set()   # diagnóstico: mezclas reasignadas / prefijos faltantes
+    learned_series = {}           # serie ('OC','DI',...) → fecha vto, aprendida del texto
 
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            # Detectar fecha en primera página
             first_text = pdf.pages[0].extract_text() or ""
             m_fecha = re.search(r'(\d{1,2})[.\-/]([A-Za-z]{3})[.\-/](\d{2,4})', first_text)
             if m_fecha:
@@ -245,24 +338,31 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
             for page in pdf.pages:
                 text = page.extract_text() or ""
 
-                # Detectar tasa libre y días al vencimiento
+                # Tasa libre y días al vencimiento
                 m_tasa = re.search(r'Tasa Libre Riesgo[^\d]*([\d.]+)%', text)
                 if m_tasa: current_tasa = float(m_tasa.group(1))
 
                 m_dias = re.search(r'Días al Vencimiento[^\d]*(\d+)', text)
                 if m_dias: current_dias = int(m_dias.group(1))
 
-                if 'Octubre' in text and '16/10/2026' in text:
-                    current_vto = "2026-10-16"
-                elif 'Diciembre' in text and '18/12/2026' in text:
-                    current_vto = "2026-12-18"
+                # FIX: vencimiento leído de cualquier "Mes DD/MM/YYYY" (no hardcodeado)
+                m_vto = re.search(
+                    r'(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|'
+                    r'Octubre|Noviembre|Diciembre)\s+\.?\s*(\d{1,2})/(\d{1,2})/(\d{2,4})', text)
+                if m_vto:
+                    try:
+                        yy = int(m_vto.group(4))
+                        yy += 2000 if yy < 100 else 0
+                        current_vto = date(yy, int(m_vto.group(3)), int(m_vto.group(2))).isoformat()
+                    except ValueError:
+                        pass
 
                 if 'OPCIONES DE COMPRA (CALL)' in text:
                     current_tipo = 'CALL'
                 elif 'OPCIONES DE VENTA (PUT)' in text:
                     current_tipo = 'PUT'
 
-                # Detectar subyacente: "NOMBRE S.A. (TICKER)"
+                # Encabezado de subyacente: solo fallback ahora
                 for line in text.split('\n'):
                     m_s = re.match(r'^(.+?)\s*\(([A-Z0-9]{2,6})\)\s*$', line.strip())
                     if m_s and len(m_s.group(2)) <= 6:
@@ -273,29 +373,41 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                 for table in tables:
                     for row in table:
                         if not row or len(row) < 10: continue
-                        sym = str(row[0] or '').strip()
-                        # Solo filas de opciones: símbolo tipo GFGCxxxxOC
-                        if not re.match(r'^[A-Z]{2,6}[CV]\d', sym):
+                        sym = str(row[0] or '').strip().upper()
+                        if not re.match(r'^[A-Z0-9]{2,8}[CV]\d', sym):
                             continue
 
-                        # Extraer tipo y vencimiento del símbolo
-                        tipo = current_tipo
-                        vto  = current_vto
-                        if re.search(r'[A-Z]C\d', sym):
-                            tipo = 'CALL'
-                        elif re.search(r'[A-Z]V\d', sym):
-                            tipo = 'PUT'
-                        if sym.endswith('OC') or 'OC' in sym[-3:]:
-                            vto = "2026-10-16"
-                        elif sym.endswith('DI') or sym.endswith('D') or 'DI' in sym[-3:]:
-                            vto = "2026-12-18"
+                        col_strike = _pf(row[3]) if len(row) > 3 else None
 
-                        # Construir dict con el mapeo de columnas
-                        r_parsed = {"symbol": sym, "tipo": tipo, "subyacente": current_suby,
-                                    "vencimiento": vto, "tasa_libre": current_tasa, "dias_vto": current_dias}
+                        # ── FIX: el símbolo manda ──
+                        info = parse_symbol(sym)
+                        if info:
+                            pref, tipo_sym, strike_sym, serie = info
+                            suby = resolve_suby(pref)
+                            if suby is None:
+                                unmapped.add(pref)
+                                suby = current_suby            # fallback: encabezado
+                            elif current_suby and suby != current_suby:
+                                mixed.append((sym, current_suby, suby))
+                            tipo   = tipo_sym or current_tipo
+                            strike = strike_sym if strike_sym else col_strike
+                            vto    = current_vto
+                            if serie and current_vto:
+                                learned_series.setdefault(serie, current_vto)
+                                learned_series.setdefault(serie[:1], current_vto)
+                            if not vto and serie:
+                                vto = learned_series.get(serie) or learned_series.get(serie[:1])
+                        else:
+                            # Símbolo no parseable: mantener comportamiento viejo + loguear
+                            unmapped.add(f"UNPARSED:{sym}")
+                            suby, tipo, strike, vto = current_suby, current_tipo, col_strike, current_vto
+
+                        r_parsed = {"symbol": sym, "tipo": tipo, "subyacente": suby,
+                                    "vencimiento": vto, "strike": strike,
+                                    "tasa_libre": current_tasa, "dias_vto": current_dias}
 
                         for col_idx, field in COL_MAP.items():
-                            if field == "symbol": continue
+                            if field in ("symbol", "strike"): continue
                             val = row[col_idx] if col_idx < len(row) else None
                             val = str(val).strip() if val is not None else None
                             if not val or val in ('', 'None'):
@@ -308,24 +420,49 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                             else:
                                 r_parsed[field] = _pf(val)
 
+                        r_parsed = _sanity_fix_row(r_parsed)
                         rows.append(r_parsed)
 
-                        # Acumular resumen
-                        suby = current_suby
+                        # Acumular resumen (con el subyacente ya bien asignado)
                         if suby:
                             vol = r_parsed.get("volumen_ars") or 0
                             oi  = r_parsed.get("open_interest") or 0
                             resumen_vol[suby] = resumen_vol.get(suby, 0) + vol
                             resumen_oi[suby]  = resumen_oi.get(suby, 0) + oi
                             resumen_pc.setdefault(suby, {"put": 0, "call": 0})
+                            resumen_pc_oi.setdefault(suby, {"put": 0, "call": 0})
                             if tipo == 'PUT':
-                                resumen_pc[suby]["put"] += vol
+                                resumen_pc[suby]["put"]    += vol
+                                resumen_pc_oi[suby]["put"] += oi
                             else:
-                                resumen_pc[suby]["call"] += vol
+                                resumen_pc[suby]["call"]    += vol
+                                resumen_pc_oi[suby]["call"] += oi
 
     except Exception as e:
         print(f"PDF parse error: {e}")
         import traceback; traceback.print_exc()
+
+    # ── NUEVO: moneyness recalculada con el spot dominante real por subyacente ──
+    spots_raw = {}
+    for r in rows:
+        s = r.get("subyacente"); p = r.get("precio_suby")
+        if s and p: spots_raw.setdefault(s, []).append(round(p, 2))
+    spots = {s: Counter(v).most_common(1)[0][0] for s, v in spots_raw.items()}
+    for r in rows:
+        spot = spots.get(r.get("subyacente"))
+        if spot and r.get("strike") and r.get("tipo"):
+            diff = (r["strike"] - spot) / spot
+            r["moneyness"] = ('ATM' if abs(diff) < 0.01 else
+                              ('ITM' if diff < 0 else 'OTM') if r["tipo"] == 'CALL' else
+                              ('ITM' if diff > 0 else 'OTM'))
+
+    # ── NUEVO: diagnóstico en logs ──
+    if mixed:
+        print(f"[parser] {len(mixed)} filas reasignadas por símbolo (mezcla detectada). "
+              f"Muestra: {mixed[:10]}")
+    if unmapped:
+        print(f"[parser] ⚠ Prefijos sin mapear: {sorted(unmapped)[:20]} — "
+              f"completar OPCION_MAP. Ver /admin/debug-symbols")
 
     resumen = {
         "ranking_volumen": sorted(
@@ -340,10 +477,19 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
             k: round(v["put"] / v["call"], 3) if v["call"] > 0 else None
             for k, v in resumen_pc.items()
         },
+        # NUEVO: ratio por OI (más estable que por volumen en días de poco trade)
+        "put_call_ratio_oi": {
+            k: round(v["put"] / v["call"], 3) if v["call"] > 0 else None
+            for k, v in resumen_pc_oi.items()
+        },
     }
     return rows, resumen, fecha_str
 
 IAMC_DIARIO_URL = "https://www.iamc.com.ar/informediario/"
+
+# ── NUEVO: URL predecible del informe por fecha (para test-iamc-url) ───────────
+def _iamc_url(d: date) -> str:
+    return f"https://www.iamc.com.ar/Informe/InformeDiarioOpciones{d:%d%m%Y}/"
 
 async def descargar_iamc_pdf(target_date: date = None) -> bool:
     """
@@ -374,8 +520,6 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
                 return False
             html1 = r1.text
 
-            # Buscar href que contenga "InformeDiarioOpciones"
-            # Buscar TODOS los links de InformeDiarioOpciones
             opciones_links = re.findall(
                 r'href=["\'](/Informe/InformeDiarioOpciones(\d{8})/?)["\']',
                 html1, re.IGNORECASE
@@ -387,8 +531,6 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
                 state["descarga_ok"] = False
                 return False
 
-            # Ordenar por fecha DDMMYYYY descendente → el más reciente primero
-            # Excluir el de hoy (el del día anterior hábil es el que tiene PDF completo)
             hoy = datetime.now(TZ_ARG).date()
             def parse_link_date(ddmmyyyy: str) -> date:
                 try:
@@ -400,7 +542,7 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
                 (parse_link_date(ddmmyyyy), path)
                 for path, ddmmyyyy in opciones_links
             ]
-            # Excluir hoy y ordenar descendente
+            # Excluir hoy y ordenar descendente (el del día anterior tiene el PDF completo)
             links_con_fecha = sorted(
                 [(d, p) for d, p in links_con_fecha if d < hoy],
                 key=lambda x: x[0], reverse=True
@@ -408,9 +550,8 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
             print(f"  Links ordenados (sin hoy): {[(str(d), p) for d, p in links_con_fecha]}")
 
             if not links_con_fecha:
-                # Si solo hay el de hoy, usarlo igual
                 links_con_fecha = sorted(
-                    [( parse_link_date(ddmmyyyy), path) for path, ddmmyyyy in opciones_links],
+                    [(parse_link_date(ddmmyyyy), path) for path, ddmmyyyy in opciones_links],
                     key=lambda x: x[0], reverse=True
                 )
 
@@ -433,7 +574,6 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
                 h2 = r_test.text
                 print(f"  Página OK ({len(h2)} bytes), buscando PDF...")
 
-                # Buscar URL del PDF en esta página
                 p_url = None
                 pdf_patterns = [
                     r'(?:src|data-src|file|url)=["\']([^"\']+\.pdf)["\']',
@@ -455,7 +595,6 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
                     print(f"  No se encontró URL de PDF en esta página, siguiente...")
                     continue
 
-                # Descargar y validar el PDF
                 print(f"  Descargando y validando PDF...")
                 r_pdf = await client.get(p_url, headers={
                     **headers_browser,
@@ -530,16 +669,13 @@ async def scheduler():
         state["descarga_ok"] = True
         print(f"Cargado desde PG: {len(rows)} opciones, fecha {fecha}")
     else:
-        # Intentar bajarlo de IAMC
         await descargar_iamc_pdf()
 
     while True:
         now = datetime.now(TZ_ARG)
-        # Calcular próxima descarga: 18:30 del día de hoy o mañana
         target = now.replace(hour=18, minute=30, second=0, microsecond=0)
         if now >= target:
             target = target + timedelta(days=1)
-        # Saltar fines de semana
         while target.weekday() >= 5:
             target = target + timedelta(days=1)
 
@@ -547,7 +683,6 @@ async def scheduler():
         print(f"Próxima descarga IAMC programada: {target.strftime('%Y-%m-%d %H:%M')} ARG (en {wait_secs/3600:.1f}h)")
         await asyncio.sleep(wait_secs)
 
-        # Intentar descarga, reintentar cada 15 min hasta las 20:00
         ok = False
         for _ in range(10):  # máximo 10 intentos = 150 min
             now = datetime.now(TZ_ARG)
@@ -747,7 +882,9 @@ async def admin_reparse():
         "muestra_ggal": [r for r in rows if r.get("subyacente") == "GGAL"][:3],
     }
 
-
+# ── FIX: faltaban los decorators — el endpoint no era accesible ────────────────
+@app.get("/admin/refresh")
+@app.post("/admin/refresh")
 async def admin_refresh(fecha_str: str = Query(None)):
     """Fuerza descarga del PDF de IAMC."""
     target = None
@@ -771,7 +908,6 @@ async def admin_upload_pdf(pdf: UploadFile = File(...)):
     rows, resumen, fecha_str = parse_iamc_pdf(content)
     if not rows:
         return {"ok": False, "error": "No se encontraron opciones en el PDF"}
-    # Extraer fecha del nombre del archivo
     m = re.search(r'(\d{2})(\d{2})(\d{4})', pdf.filename or '')
     if m:
         fecha = date(int(m.group(3)), int(m.group(2)), int(m.group(1))).isoformat()
@@ -840,6 +976,27 @@ async def get_disponibles():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+# ── NUEVO: diagnóstico de prefijos para completar OPCION_MAP ───────────────────
+@app.get("/admin/debug-symbols")
+async def debug_symbols():
+    """Prefijos de símbolos vistos, a qué subyacente resolvieron y conteo.
+    Sirve para completar OPCION_MAP cuando aparece un subyacente nuevo."""
+    cnt = Counter()
+    for r in state["opciones"]:
+        info = parse_symbol(r.get("symbol") or "")
+        if not info:
+            cnt[("??UNPARSED", (r.get("symbol") or "")[:24], r.get("subyacente") or "?")] += 1
+        else:
+            pref = info[0]
+            suby = resolve_suby(pref)
+            cnt[(pref, suby or f"?FALLBACK:{r.get('subyacente')}", r.get("subyacente") or "?")] += 1
+    return {
+        "fecha": state["fecha"],
+        "prefijos": [
+            {"prefijo": k[0], "resuelto_a": k[1], "suby_en_pdf": k[2], "filas": v}
+            for k, v in cnt.most_common()
+        ],
+    }
 
 @app.get("/admin/debug-parser")
 async def debug_parser(suby: str = "GGAL"):
@@ -919,13 +1076,13 @@ async def debug_page(page_num: int):
         import traceback
         return {"error": str(e), "traceback": traceback.format_exc()}
 
-
+# ── FIX: esta función existía pero no tenía route (código muerto) ──────────────
+@app.get("/admin/debug-iamc")
 async def debug_iamc_html():
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as client:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-            # Paso 1
             r1 = await client.get(IAMC_DIARIO_URL, headers=headers)
             html1 = r1.text
             opciones_links = re.findall(r'href=["\']([^"\']*[Oo]pciones[^"\']*)["\']', html1)
@@ -939,7 +1096,6 @@ async def debug_iamc_html():
                 "informe_link_encontrado": informe_link,
             }
 
-            # Paso 2 si encontramos el link
             if informe_link:
                 informe_url = informe_link if informe_link.startswith('http') else f"https://www.iamc.com.ar{informe_link}"
                 r2 = await client.get(informe_url, headers=headers)
@@ -961,10 +1117,10 @@ async def debug_iamc_html():
 
 @app.get("/admin/test-iamc-url")
 async def test_iamc_url(fecha_str: str = Query(None)):
-    """Testea si la URL del PDF de IAMC es accesible."""
+    """Testea si la URL del PDF de IAMC es accesible (últimos 5 días hábiles)."""
     if fecha_str:
         try: d = date.fromisoformat(fecha_str)
-        except: d = date.today()
+        except: d = datetime.now(TZ_ARG).date()
     else:
         d = datetime.now(TZ_ARG).date()
     results = []
