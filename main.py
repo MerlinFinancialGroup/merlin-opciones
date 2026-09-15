@@ -179,15 +179,15 @@ def _pi(v):
 
 def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
     """
-    Parsea el PDF de IAMC y devuelve (rows, resumen, fecha_str).
-    Estructura del PDF:
-      - Páginas con header: subyacente, tipo (CALL/PUT), vencimiento (OC=Oct, DI=Dic)
-      - Columnas: Symbol, Strike, Distancia ITM/OTM, Moneyness, Precio Suby,
-                  Apertura Prima, Min Prima, Max Prima, Ultimo Precio Prima,
-                  Var Prima%, Hora Ultimo Trade, Volumen Efectivo ARS, Cant Ops,
-                  Open Interest, Var OI%, Precio Teorico, Desvio vs Teorico ARS,
-                  Valor Temporal, Vol Historica 40r, Vol Implicita,
-                  Delta, Gamma, Theta, Vega, Rho
+    Parsea el PDF de IAMC.
+    La tabla tiene 78 columnas, cada campo ocupa 3 celdas (valor, vacío, vacío).
+    Mapeo de columnas:
+      0=Symbol, 3=Strike, 6=Dist ITM/OTM, 8=Moneyness, 11=PrecioSuby,
+      14=AperturaPrima, 19=MinPrima, 22=MaxPrima, 25=UltimoPrecio,
+      28=VarPrima%, 33=HoraUltimo, 36=VolumenARS, 39=CantOps,
+      42=OI, 45=VarOI%, 48=PrecioTeorico, 51=DesvioTeorico,
+      54=ValorTemporal, 57=VolHist40r, 60=VolImplicita,
+      63=Delta, 66=Gamma, 69=Theta, 72=Vega, 75=Rho
     """
     if not HAS_PDF: return [], {}, None
     rows = []
@@ -196,142 +196,137 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
     resumen_pc  = {}
     fecha_str   = None
 
-    # Mapeo de sufijo en symbol → tipo + vencimiento
-    # OC = call oct, DI = call/put dic, VxOC = put oct, VxDI = put dic
-    # En el PDF el tipo está en el header de sección
-    # Inferimos tipo por la C/V en el symbol: GFGCxxOC = call oct, GFGVxxOC = put oct
-    # También por el sufijo DI = diciembre, OC = octubre
+    # Mapeo col_index → field_name
+    COL_MAP = {
+        0:  "symbol",
+        3:  "strike",
+        6:  "distancia_itm_otm",
+        8:  "moneyness",
+        11: "precio_suby",
+        14: "apertura_prima",
+        19: "min_prima",
+        22: "max_prima",
+        25: "ultimo_precio",
+        28: "var_prima_pct",
+        33: "hora_ultimo",
+        36: "volumen_ars",
+        39: "cant_ops",
+        42: "open_interest",
+        45: "var_oi_pct",
+        48: "precio_teorico",
+        51: "desvio_teorico",
+        54: "valor_temporal",
+        57: "vol_hist_40r",
+        60: "vol_implicita",
+        63: "delta",
+        66: "gamma",
+        69: "theta",
+        72: "vega",
+        75: "rho",
+    }
+    STR_FIELDS  = {"symbol", "moneyness", "hora_ultimo", "distancia_itm_otm"}
+    FLOAT_FIELDS = set(COL_MAP.values()) - STR_FIELDS - {"symbol", "cant_ops", "open_interest"}
+    INT_FIELDS  = {"cant_ops", "open_interest"}
 
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            # Detectar fecha del PDF (título primera página)
+            # Detectar fecha en primera página
             first_text = pdf.pages[0].extract_text() or ""
             m_fecha = re.search(r'(\d{1,2})[.\-/]([A-Za-z]{3})[.\-/](\d{2,4})', first_text)
             if m_fecha:
                 fecha_str = f"{m_fecha.group(1)}-{m_fecha.group(2)}-{m_fecha.group(3)}"
 
-            # Variables de contexto para cada página/sección
             current_suby    = None
-            current_tipo    = None   # CALL / PUT
-            current_vto     = None   # "2026-10-16" / "2026-12-18"
+            current_tipo    = None
+            current_vto     = None
             current_tasa    = None
             current_dias    = None
 
             for page in pdf.pages:
                 text = page.extract_text() or ""
-                lines = [l.strip() for l in text.split('\n') if l.strip()]
 
-                # Detectar tasa libre de riesgo y días al vencimiento del header
+                # Detectar contexto de la página
                 m_tasa = re.search(r'Tasa Libre Riesgo\s+([\d.]+)%', text)
                 if m_tasa: current_tasa = float(m_tasa.group(1))
 
                 m_dias = re.search(r'Días al Vencimiento\s+(\d+)', text)
                 if m_dias: current_dias = int(m_dias.group(1))
 
-                # Detectar vencimiento del header
                 if 'Octubre' in text and '16/10/2026' in text:
                     current_vto = "2026-10-16"
                 elif 'Diciembre' in text and '18/12/2026' in text:
                     current_vto = "2026-12-18"
 
-                # Detectar tipo en header de sección
                 if 'OPCIONES DE COMPRA (CALL)' in text:
                     current_tipo = 'CALL'
                 elif 'OPCIONES DE VENTA (PUT)' in text:
                     current_tipo = 'PUT'
 
-                # Detectar subyacente: líneas tipo "GRUPO FINANCIERO GALICIA S.A. (GGAL)"
-                for line in lines:
-                    m_suby = re.match(r'^(.+?)\s*\(([A-Z0-9]+)\)\s*$', line)
-                    if m_suby and len(m_suby.group(2)) <= 6:
-                        current_suby = m_suby.group(2)
+                # Detectar subyacente: "NOMBRE S.A. (TICKER)"
+                for line in text.split('\n'):
+                    m_s = re.match(r'^(.+?)\s*\(([A-Z0-9]{2,6})\)\s*$', line.strip())
+                    if m_s and len(m_s.group(2)) <= 6:
+                        current_suby = m_s.group(2)
 
-                # Extraer tabla usando pdfplumber
+                # Procesar tablas
                 tables = page.extract_tables()
                 for table in tables:
                     for row in table:
-                        if not row or not row[0]: continue
-                        sym = str(row[0]).strip()
-                        # Symbol tiene formato como GFGC7600OC, COMC41.0OC, etc.
-                        if not re.match(r'^[A-Z]{2,6}[CV]?\d', sym): continue
+                        if not row or len(row) < 10: continue
+                        sym = str(row[0] or '').strip()
+                        # Solo filas de opciones: símbolo tipo GFGCxxxxOC
+                        if not re.match(r'^[A-Z]{2,6}[CV]\d', sym):
+                            continue
 
-                        # Inferir tipo y vencimiento del symbol si no está en contexto
+                        # Extraer tipo y vencimiento del símbolo
                         tipo = current_tipo
                         vto  = current_vto
-                        if sym.endswith('OC'):
+                        if re.search(r'[A-Z]C\d', sym):
+                            tipo = 'CALL'
+                        elif re.search(r'[A-Z]V\d', sym):
+                            tipo = 'PUT'
+                        if sym.endswith('OC') or 'OC' in sym[-3:]:
                             vto = "2026-10-16"
-                            # C antes del strike → call, V → put
-                            tipo = 'PUT' if re.search(r'[A-Z]V\d', sym) else 'CALL'
-                        elif sym.endswith('DI') or sym.endswith('D'):
+                        elif sym.endswith('DI') or sym.endswith('D') or 'DI' in sym[-3:]:
                             vto = "2026-12-18"
-                            tipo = 'PUT' if re.search(r'[A-Z]V\d', sym) else 'CALL'
 
-                        # Inferir subyacente del symbol (primeros 3-4 chars antes de C/V)
-                        suby = current_suby
-                        if not suby:
-                            m_s = re.match(r'^([A-Z]{2,4})[CV]\d', sym)
-                            if m_s: suby = m_s.group(1)
+                        # Construir dict con el mapeo de columnas
+                        r_parsed = {"symbol": sym, "tipo": tipo, "subyacente": current_suby,
+                                    "vencimiento": vto, "tasa_libre": current_tasa, "dias_vto": current_dias}
 
-                        def safe(idx):
-                            try: return row[idx]
-                            except: return None
+                        for col_idx, field in COL_MAP.items():
+                            if field == "symbol": continue
+                            val = row[col_idx] if col_idx < len(row) else None
+                            val = str(val).strip() if val is not None else None
+                            if not val or val in ('', 'None'):
+                                r_parsed[field] = None
+                                continue
+                            if field in STR_FIELDS:
+                                r_parsed[field] = val
+                            elif field in INT_FIELDS:
+                                r_parsed[field] = _pi(val)
+                            else:
+                                r_parsed[field] = _pf(val)
 
-                        # Parsear strike del symbol o de columna
-                        strike_str = ""
-                        m_strike = re.search(r'[CV]([\d.]+)[OD]', sym)
-                        if m_strike: strike_str = m_strike.group(1)
-
-                        r_parsed = {
-                            "symbol":         sym,
-                            "tipo":           tipo,
-                            "subyacente":     suby,
-                            "vencimiento":    vto,
-                            "strike":         _pf(strike_str) or _pf(safe(1)),
-                            "moneyness":      str(safe(3) or '').strip() or None,
-                            "precio_suby":    _pf(safe(4)),
-                            "apertura_prima": _pf(safe(5)),
-                            "min_prima":      _pf(safe(6)),
-                            "max_prima":      _pf(safe(7)),
-                            "ultimo_precio":  _pf(safe(8)),
-                            "var_prima_pct":  _pf(safe(9)),
-                            "hora_ultimo":    str(safe(10) or '').strip() or None,
-                            "volumen_ars":    _pf(safe(11)),
-                            "cant_ops":       _pi(safe(12)),
-                            "open_interest":  _pi(safe(13)),
-                            "var_oi_pct":     _pf(safe(14)),
-                            "precio_teorico": _pf(safe(15)),
-                            "desvio_teorico": _pf(safe(16)),
-                            "valor_temporal": _pf(safe(17)),
-                            "vol_hist_40r":   _pf(safe(18)),
-                            "vol_implicita":  _pf(safe(19)),
-                            "delta":          _pf(safe(20)),
-                            "gamma":          _pf(safe(21)),
-                            "theta":          _pf(safe(22)),
-                            "vega":           _pf(safe(23)),
-                            "rho":            _pf(safe(24)),
-                            "tasa_libre":     current_tasa,
-                            "dias_vto":       current_dias,
-                        }
                         rows.append(r_parsed)
 
                         # Acumular resumen
+                        suby = current_suby
                         if suby:
-                            vol = _pf(safe(11)) or 0
-                            oi  = _pi(safe(13)) or 0
+                            vol = r_parsed.get("volumen_ars") or 0
+                            oi  = r_parsed.get("open_interest") or 0
                             resumen_vol[suby] = resumen_vol.get(suby, 0) + vol
                             resumen_oi[suby]  = resumen_oi.get(suby, 0) + oi
+                            resumen_pc.setdefault(suby, {"put": 0, "call": 0})
                             if tipo == 'PUT':
-                                resumen_pc.setdefault(suby, {"put": 0, "call": 0})
                                 resumen_pc[suby]["put"] += vol
                             else:
-                                resumen_pc.setdefault(suby, {"put": 0, "call": 0})
                                 resumen_pc[suby]["call"] += vol
 
     except Exception as e:
         print(f"PDF parse error: {e}")
         import traceback; traceback.print_exc()
 
-    # Construir resumen
     resumen = {
         "ranking_volumen": sorted(
             [{"subyacente": k, "volumen_ars": v} for k, v in resumen_vol.items()],
@@ -346,7 +341,6 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
             for k, v in resumen_pc.items()
         },
     }
-
     return rows, resumen, fecha_str
 
 IAMC_DIARIO_URL = "https://www.iamc.com.ar/informediario/"
