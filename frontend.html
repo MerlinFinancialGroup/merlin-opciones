@@ -179,6 +179,7 @@ td.muted{color:#3a3020}
         </div>
         <div class="tab-btns">
           <button class="tab-btn active" onclick="switchView('cadena',this)">Cadena</button>
+          <button class="tab-btn" onclick="switchView('smile',this)">IV Smile</button>
           <button class="tab-btn" onclick="switchView('resumen',this)">Resumen</button>
         </div>
       </div>
@@ -342,7 +343,119 @@ function switchView(view, btn) {
 
 function renderView() {
   if (state.view === 'cadena') renderCadena();
+  else if (state.view === 'smile') renderSmile();
   else renderResumen();
+}
+
+function renderSmile() {
+  const vto  = document.getElementById('ctrl-vto').value;
+  const show = document.getElementById('ctrl-show').value;
+  let rows = state.cadena.filter(r => r.vol_implicita > 0 && r.strike > 0);
+  if (vto)   rows = rows.filter(r => r.vencimiento === vto);
+  if (show === 'traded') rows = rows.filter(r => r.volumen_ars > 0);
+  if (show === 'oi')     rows = rows.filter(r => r.open_interest > 0);
+  if (!rows.length) { document.getElementById('content').innerHTML = '<div class="empty"><p>Sin datos de IV</p></div>'; return; }
+
+  const calls = rows.filter(r => r.tipo==='CALL').sort((a,b)=>a.strike-b.strike);
+  const puts  = rows.filter(r => r.tipo==='PUT').sort((a,b)=>a.strike-b.strike);
+  const spot  = rows.find(r=>r.precio_suby)?.precio_suby || 0;
+  const allIV = rows.map(r=>r.vol_implicita);
+  const ivMin = Math.min(...allIV), ivMax = Math.max(...allIV);
+  const ivAvg = (allIV.reduce((a,b)=>a+b,0)/allIV.length).toFixed(2);
+  const atmRow = rows.reduce((b,r)=>Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null);
+  const otmP = puts.filter(r=>r.strike<spot*0.95).at(-1);
+  const otmC = calls.filter(r=>r.strike>spot*1.05)[0];
+  const skew = otmP&&otmC ? (otmP.vol_implicita-otmC.vol_implicita).toFixed(2) : null;
+
+  document.getElementById('content').innerHTML = `
+    <div style="padding:16px 20px;overflow:auto;height:100%">
+      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;margin-bottom:14px">
+        <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#3a3020;margin-bottom:8px">IV Smile — ${state.currentSuby}</div>
+        <canvas id="sc" width="1200" height="300" style="width:100%;height:300px"></canvas>
+        <div id="stt" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#7a6a3a;margin-top:4px;min-height:14px"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+        ${[
+          ['IV Mín',ivMin.toFixed(2)+'%',''],
+          ['IV Máx',ivMax.toFixed(2)+'%',''],
+          ['IV Prom',ivAvg+'%','#C9960A'],
+          ['IV ATM',atmRow?atmRow.vol_implicita.toFixed(2)+'%':'—','#C9960A'],
+          ['Skew Put-Call',skew!=null?(skew>0?'+':'')+skew+'%':'—',skew>0?'#c0392b':skew<0?'#3ab07a':''],
+          ['VH 40r',(rows[0]?.vol_hist_40r?.toFixed(2)||'—')+'%',''],
+          ['Strikes',allIV.length,''],
+          ['Spot','$'+fmt(spot),'#C9960A'],
+        ].map(([l,v,c])=>`<div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
+          <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;color:#3a3020;margin-bottom:3px">${l}</div>
+          <div style="font-size:14px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${c||'#e8e0cc'}">${v}</div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+
+  const canvas = document.getElementById('sc');
+  const dpr = window.devicePixelRatio||1;
+  const W = canvas.offsetWidth, H = 300;
+  canvas.width = W*dpr; canvas.height = H*dpr;
+  canvas.style.width = W+'px'; canvas.style.height = H+'px';
+  const c = canvas.getContext('2d');
+  c.scale(dpr,dpr);
+  const pad = {l:50,r:16,t:14,b:32};
+  const cW = W-pad.l-pad.r, cH = H-pad.t-pad.b;
+  const sArr = rows.map(r=>r.strike);
+  const sMin = Math.min(...sArr), sMax = Math.max(...sArr);
+  const yPad = (ivMax-ivMin)*0.12||1;
+  const yMin = ivMin-yPad, yMax = ivMax+yPad;
+  const xs = s=>pad.l+(s-sMin)/(sMax-sMin)*cW;
+  const ys = v=>pad.t+cH-(v-yMin)/(yMax-yMin)*cH;
+
+  c.fillStyle='#12100a'; c.fillRect(0,0,W,H);
+  for(let i=0;i<=5;i++){
+    const v=yMin+(yMax-yMin)*i/5, y=ys(v);
+    c.strokeStyle='#1a1710'; c.lineWidth=0.5;
+    c.beginPath(); c.moveTo(pad.l,y); c.lineTo(W-pad.r,y); c.stroke();
+    c.fillStyle='#3a3020'; c.font='9px monospace'; c.textAlign='right';
+    c.fillText(v.toFixed(1)+'%',pad.l-3,y+3);
+  }
+  for(let i=0;i<=6;i++){
+    const s=sMin+(sMax-sMin)*i/6, x=xs(s);
+    c.strokeStyle='#1a1710'; c.lineWidth=0.5;
+    c.beginPath(); c.moveTo(x,pad.t); c.lineTo(x,H-pad.b); c.stroke();
+    c.fillStyle='#3a3020'; c.font='9px monospace'; c.textAlign='center';
+    c.fillText('$'+Math.round(s).toLocaleString('es-AR'),x,H-pad.b+12);
+  }
+  if(spot>=sMin&&spot<=sMax){
+    const xa=xs(spot);
+    c.strokeStyle='rgba(201,150,10,0.3)'; c.lineWidth=1; c.setLineDash([4,4]);
+    c.beginPath(); c.moveTo(xa,pad.t); c.lineTo(xa,H-pad.b); c.stroke(); c.setLineDash([]);
+    c.fillStyle='#C9960A'; c.font='9px monospace'; c.textAlign='center';
+    c.fillText('ATM',xa,pad.t+10);
+  }
+  [[calls,'rgba(58,176,122,0.4)'],[puts,'rgba(192,57,43,0.4)']].forEach(([pts,col])=>{
+    if(pts.length<2) return;
+    c.strokeStyle=col; c.lineWidth=1.5; c.setLineDash([3,3]);
+    c.beginPath(); pts.forEach((r,i)=>i===0?c.moveTo(xs(r.strike),ys(r.vol_implicita)):c.lineTo(xs(r.strike),ys(r.vol_implicita)));
+    c.stroke(); c.setLineDash([]);
+  });
+  [[calls,'rgba(58,176,122,0.85)'],[puts,'rgba(192,57,43,0.85)']].forEach(([pts,col])=>{
+    pts.forEach(r=>{
+      const x=xs(r.strike),y=ys(r.vol_implicita),rad=Math.min(3+Math.log10((r.open_interest||1)+1)*1.5,9);
+      c.beginPath(); c.arc(x,y,rad,0,Math.PI*2); c.fillStyle=col; c.fill();
+    });
+  });
+  c.fillStyle='#3ab07a'; c.beginPath(); c.arc(pad.l+8,pad.t+6,4,0,Math.PI*2); c.fill();
+  c.fillStyle='#7a6a3a'; c.font='10px monospace'; c.textAlign='left'; c.fillText('CALL',pad.l+16,pad.t+10);
+  c.fillStyle='#c0392b'; c.beginPath(); c.arc(pad.l+56,pad.t+6,4,0,Math.PI*2); c.fill();
+  c.fillText('PUT',pad.l+64,pad.t+10);
+
+  canvas.onmousemove = e => {
+    const rect=canvas.getBoundingClientRect();
+    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    let best=null, bd=20;
+    rows.forEach(r=>{ const d=Math.hypot(xs(r.strike)-mx,ys(r.vol_implicita)-my); if(d<bd){bd=d;best=r;} });
+    document.getElementById('stt').innerHTML = best
+      ? `<span style="color:${best.tipo==='CALL'?'#3ab07a':'#c0392b'}">${best.tipo}</span> · ${best.symbol} · $${fmt(best.strike)} · IV <span style="color:#C9960A">${best.vol_implicita.toFixed(2)}%</span> · Último $${fmt(best.ultimo_precio)} · OI ${fmtN(best.open_interest)}`
+      : '';
+  };
+  canvas.onmouseleave = ()=>{ document.getElementById('stt').innerHTML=''; };
 }
 
 function renderCadena() {
