@@ -580,8 +580,12 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
     }
 
     def get_col_map(ncols):
-        if ncols >= 80:   return COL_MAP_81
-        if ncols >= 75:   return COL_MAP_78
+        if ncols >= 80:
+            print(f"  [parser] usando COL_MAP_81 para tabla con {ncols} cols")
+            return COL_MAP_81
+        if ncols >= 75:
+            return COL_MAP_78
+        print(f"  [parser] usando COL_MAP_73 para tabla con {ncols} cols")
         return COL_MAP_73
 
     COL_MAP = COL_MAP_78  # default, se sobreescribe por tabla
@@ -713,6 +717,8 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                                         "tasa_libre": current_tasa, "dias_vto": current_dias}
 
                             col_map = get_col_map(len(row))
+                            if len(row) not in (73, 78, 81):
+                                print(f"  [parser] fila {sym} tiene {len(row)} cols — revisar mapeo")
                             for col_idx, field in col_map.items():
                                 if field in ("symbol", "strike"): continue
                                 val = row[col_idx] if col_idx < len(row) else None
