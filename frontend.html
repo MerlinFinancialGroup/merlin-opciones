@@ -230,17 +230,6 @@ async function validarToken(token) {
 }
 
 async function init() {
-  const params = new URLSearchParams(window.location.search);
-  const stoken = params.get('stoken');
-  if (!stoken) {
-    document.getElementById('auth-screen').style.display = 'flex';
-    return;
-  }
-  const ok = await validarToken(stoken);
-  if (!ok) {
-    document.getElementById('auth-screen').style.display = 'flex';
-    return;
-  }
   document.getElementById('app').style.display = 'block';
   await loadData();
   setInterval(loadData, 60000);
