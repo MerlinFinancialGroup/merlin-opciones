@@ -1270,16 +1270,19 @@ async def get_cadena(
         if book:
             bids = book.get("bids", [])
             asks = book.get("asks", [])
-            bid = bids[0]["price"] if bids else None
-            ask = asks[0]["price"] if asks else None
+            bid = bids[0]["price"] if bids else book.get("bid")
+            ask = asks[0]["price"] if asks else book.get("ask")
             row["bid"]     = bid
             row["ask"]     = ask
-            row["qty_bid"] = bids[0]["qty"] if bids else None
-            row["qty_ask"] = asks[0]["qty"] if asks else None
+            row["qty_bid"] = bids[0]["qty"] if bids else book.get("qty_bid")
+            row["qty_ask"] = asks[0]["qty"] if asks else book.get("qty_ask")
             row["book_ts"] = book.get("ts")
 
             # Calcular VI de bid, offer y último
             S    = row.get("precio_suby")
+            # Fallback: buscar precio_suby de otra fila del mismo subyacente
+            if not S and subyacente:
+                S = next((x.get("precio_suby") for x in rows if x.get("precio_suby") and x.get("subyacente","").upper() == subyacente.upper()), None)
             K    = row.get("strike")
             dias = row.get("dias_vto")
             tipo_op = row.get("tipo")
