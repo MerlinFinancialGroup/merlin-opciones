@@ -255,6 +255,7 @@ let state = {
   currentSuby: null,
   view: 'cadena',
   dropped: 0,
+  smileTipo: 'ambos', // 'call' | 'put' | 'ambos'
 };
 let cadenaAbort = null;
 let lastCadenaJson = null;
@@ -558,28 +559,43 @@ function renderView() {
 function renderSmile() {
   const vto  = document.getElementById('ctrl-vto').value;
   const show = document.getElementById('ctrl-show').value;
-  let rows = state.cadena.filter(r => r.vol_implicita > 0 && r.strike > 0);
-  if (vto)   rows = rows.filter(r => r.vencimiento === vto);
-  if (show === 'traded') rows = rows.filter(r => (r.volumen_ars||0) > 0);
-  if (show === 'oi')     rows = rows.filter(r => (r.open_interest||0) > 0);
-  if (!rows.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
+  // Pool base: necesitan vol_implicita O vi_bid/vi_offer para el canvas
+  let base = state.cadena.filter(r => r.strike > 0 && (r.vol_implicita > 0 || r.vi_bid > 0 || r.vi_offer > 0));
+  if (vto)   base = base.filter(r => r.vencimiento === vto);
+  if (show === 'traded') base = base.filter(r => (r.volumen_ars||0) > 0);
+  if (show === 'oi')     base = base.filter(r => (r.open_interest||0) > 0);
+  if (!base.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
 
-  const calls = rows.filter(r => r.tipo==='CALL').sort((a,b)=>a.strike-b.strike);
-  const puts  = rows.filter(r => r.tipo==='PUT').sort((a,b)=>a.strike-b.strike);
-  const spot  = rows.find(r=>r.precio_suby)?.precio_suby || 0;
-  const allIV = rows.map(r=>r.vol_implicita);
+  // Aplicar filtro de tipo al pool de stats (skew, ivMin/Max, etc.)
+  const st = state.smileTipo;
+  let rows = st === 'call' ? base.filter(r=>r.tipo==='CALL')
+           : st === 'put'  ? base.filter(r=>r.tipo==='PUT')
+           : base;
+  if (!rows.length) rows = base; // fallback si el filtro deja vacío
+
+  const calls = base.filter(r => r.tipo==='CALL').sort((a,b)=>a.strike-b.strike);
+  const puts  = base.filter(r => r.tipo==='PUT').sort((a,b)=>a.strike-b.strike);
+  const spot  = base.find(r=>r.precio_suby)?.precio_suby || 0;
+  const allIV = rows.map(r=>r.vol_implicita).filter(v=>v>0);
+  if (!allIV.length) { showEmpty('Sin datos de IV Último para los filtros seleccionados'); return; }
   const ivMin = Math.min(...allIV), ivMax = Math.max(...allIV);
   const ivAvg = (allIV.reduce((a,b)=>a+b,0)/allIV.length).toFixed(2);
-  const atmRow = spot>0 ? rows.reduce((b,r)=>Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null) : null;
-  const otmP = spot>0 ? puts.filter(r=>r.strike<spot*0.95).at(-1) : null;
-  const otmC = spot>0 ? calls.filter(r=>r.strike>spot*1.05)[0] : null;
+  const atmRow = spot>0 ? rows.reduce((b,r)=>r.vol_implicita>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null) : null;
+  const otmP = spot>0 ? puts.filter(r=>r.strike<spot*0.95&&r.vol_implicita>0).at(-1) : null;
+  const otmC = spot>0 ? calls.filter(r=>r.strike>spot*1.05&&r.vol_implicita>0)[0] : null;
   const skew = otmP&&otmC ? +(otmP.vol_implicita-otmC.vol_implicita).toFixed(2) : null;
   const vh = rows.map(r=>r.vol_hist_40r).find(v=>v!=null);
+
+  const smileToggleHtml = `
+    <div style="display:flex;gap:4px;margin-bottom:10px;align-items:center">
+      <span style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;margin-right:6px">Mostrar</span>
+      ${['ambos','call','put'].map(v=>`<button onclick="setSmileTipo('${v}')" style="padding:3px 10px;border-radius:4px;border:0.5px solid ${state.smileTipo===v?'#C9960A':'#2a2510'};background:${state.smileTipo===v?'rgba(201,150,10,0.12)':'none'};color:${state.smileTipo===v?'#C9960A':'#a09880'};cursor:pointer;font-size:10px;font-family:'JetBrains Mono',monospace">${v.toUpperCase()}</button>`).join('')}
+    </div>`;
 
   document.getElementById('content').innerHTML = `
     <div style="padding:16px 20px;overflow:auto;height:100%">
       <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;margin-bottom:14px">
-        <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;margin-bottom:8px">IV Smile — ${esc(state.currentSuby)}</div>
+        ${smileToggleHtml}
         <canvas id="sc" width="1200" height="300" style="width:100%;height:300px"></canvas>
         <div id="stt" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#c8c0b0;margin-top:4px;min-height:14px"></div>
       </div>
@@ -605,66 +621,147 @@ function renderSmile() {
   const W = canvas.offsetWidth, H = 300;
   canvas.width = W*dpr; canvas.height = H*dpr;
   canvas.style.width = W+'px'; canvas.style.height = H+'px';
-  const c = canvas.getContext('2d');
-  c.scale(dpr,dpr);
-  const pad = {l:50,r:16,t:14,b:32};
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr,dpr);
+  const pad = {l:50,r:16,t:28,b:32}; // t=28 para dejar espacio a la leyenda
   const cW = W-pad.l-pad.r, cH = H-pad.t-pad.b;
-  const sArr = rows.map(r=>r.strike);
-  const sMin = Math.min(...sArr), sMax = Math.max(...sArr);
-  const yPad = (ivMax-ivMin)*0.12||1;
-  const yMin = ivMin-yPad, yMax = ivMax+yPad;
-  const xs = s=>pad.l+(s-sMin)/(sMax-sMin)*cW;
-  const ys = v=>pad.t+cH-(v-yMin)/(yMax-yMin)*cH;
 
-  c.fillStyle='#12100a'; c.fillRect(0,0,W,H);
+  // Determinar rango Y: incluir vi_bid y vi_offer además de vol_implicita
+  const showCalls = st === 'call' || st === 'ambos';
+  const showPuts  = st === 'put'  || st === 'ambos';
+  const visRows = base.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
+  const allYVals = visRows.flatMap(r=>[r.vol_implicita,r.vi_bid,r.vi_offer].filter(v=>v>0));
+  if (!allYVals.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
+  const yRawMin = Math.min(...allYVals), yRawMax = Math.max(...allYVals);
+  const sArr = visRows.map(r=>r.strike);
+  const sMin = Math.min(...sArr), sMax = Math.max(...sArr);
+  const yPad = (yRawMax-yRawMin)*0.12||1;
+  const yMin = yRawMin-yPad, yMax = yRawMax+yPad;
+  const xs = s => pad.l + (sMax===sMin ? cW/2 : (s-sMin)/(sMax-sMin)*cW);
+  const ys = v => pad.t + cH - (yMax===yMin ? cH/2 : (v-yMin)/(yMax-yMin)*cH);
+
+  ctx.fillStyle='#12100a'; ctx.fillRect(0,0,W,H);
+
+  // Grid Y
   for(let i=0;i<=5;i++){
     const v=yMin+(yMax-yMin)*i/5, y=ys(v);
-    c.strokeStyle='#1a1710'; c.lineWidth=0.5;
-    c.beginPath(); c.moveTo(pad.l,y); c.lineTo(W-pad.r,y); c.stroke();
-    c.fillStyle='#706858'; c.font='9px monospace'; c.textAlign='right';
-    c.fillText(v.toFixed(1)+'%',pad.l-3,y+3);
+    ctx.strokeStyle='#1a1710'; ctx.lineWidth=0.5;
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(W-pad.r,y); ctx.stroke();
+    ctx.fillStyle='#706858'; ctx.font='9px monospace'; ctx.textAlign='right';
+    ctx.fillText(v.toFixed(1)+'%',pad.l-3,y+3);
   }
+  // Grid X
   for(let i=0;i<=6;i++){
     const s=sMin+(sMax-sMin)*i/6, x=xs(s);
-    c.strokeStyle='#1a1710'; c.lineWidth=0.5;
-    c.beginPath(); c.moveTo(x,pad.t); c.lineTo(x,H-pad.b); c.stroke();
-    c.fillStyle='#706858'; c.font='9px monospace'; c.textAlign='center';
-    c.fillText('$'+Math.round(s).toLocaleString('es-AR'),x,H-pad.b+12);
+    ctx.strokeStyle='#1a1710'; ctx.lineWidth=0.5;
+    ctx.beginPath(); ctx.moveTo(x,pad.t); ctx.lineTo(x,H-pad.b); ctx.stroke();
+    ctx.fillStyle='#706858'; ctx.font='9px monospace'; ctx.textAlign='center';
+    ctx.fillText('$'+Math.round(s).toLocaleString('es-AR'),x,H-pad.b+12);
   }
+  // Línea ATM
   if(spot>=sMin&&spot<=sMax){
     const xa=xs(spot);
-    c.strokeStyle='rgba(201,150,10,0.3)'; c.lineWidth=1; c.setLineDash([4,4]);
-    c.beginPath(); c.moveTo(xa,pad.t); c.lineTo(xa,H-pad.b); c.stroke(); c.setLineDash([]);
-    c.fillStyle='#C9960A'; c.font='9px monospace'; c.textAlign='center';
-    c.fillText('ATM',xa,pad.t+10);
+    ctx.strokeStyle='rgba(201,150,10,0.3)'; ctx.lineWidth=1; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(xa,pad.t); ctx.lineTo(xa,H-pad.b); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle='#C9960A'; ctx.font='9px monospace'; ctx.textAlign='center';
+    ctx.fillText('ATM',xa,H-pad.b+22);
   }
-  [[calls,'rgba(58,176,122,0.4)'],[puts,'rgba(192,57,43,0.4)']].forEach(([pts,col])=>{
-    if(pts.length<2) return;
-    c.strokeStyle=col; c.lineWidth=1.5; c.setLineDash([3,3]);
-    c.beginPath(); pts.forEach((r,i)=>i===0?c.moveTo(xs(r.strike),ys(r.vol_implicita)):c.lineTo(xs(r.strike),ys(r.vol_implicita)));
-    c.stroke(); c.setLineDash([]);
-  });
-  [[calls,'rgba(58,176,122,0.85)'],[puts,'rgba(192,57,43,0.85)']].forEach(([pts,col])=>{
-    pts.forEach(r=>{
-      const x=xs(r.strike),y=ys(r.vol_implicita);
-      c.beginPath(); c.arc(x,y,5,0,Math.PI*2); c.fillStyle=col; c.fill();
-    });
-  });
-  c.fillStyle='#3ab07a'; c.beginPath(); c.arc(pad.l+8,pad.t+6,4,0,Math.PI*2); c.fill();
-  c.fillStyle='#c8c0b0'; c.font='10px monospace'; c.textAlign='left'; c.fillText('CALL',pad.l+16,pad.t+10);
-  c.fillStyle='#c0392b'; c.beginPath(); c.arc(pad.l+56,pad.t+6,4,0,Math.PI*2); c.fill();
-  c.fillText('PUT',pad.l+64,pad.t+10);
 
+  // Helper: dibujar una serie de puntos con línea
+  function drawSerie(pts, getY, strokeCol, dotCol, dash=[]) {
+    const valid = pts.filter(r=>getY(r)>0);
+    if(valid.length<1) return;
+    if(valid.length>=2){
+      ctx.strokeStyle=strokeCol; ctx.lineWidth=1.2; ctx.setLineDash(dash);
+      ctx.beginPath();
+      valid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(getY(r))):ctx.lineTo(xs(r.strike),ys(getY(r))));
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    valid.forEach(r=>{
+      const x=xs(r.strike),y=ys(getY(r));
+      ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2); ctx.fillStyle=dotCol; ctx.fill();
+    });
+  }
+
+  // IV Bid (línea punteada fina) / IV Offer (línea punteada fina) / IV Últ (círculos sólidos)
+  if(showCalls){
+    drawSerie(calls, r=>r.vi_bid,   'rgba(58,176,122,0.35)', 'rgba(58,176,122,0.5)',  [2,3]);
+    drawSerie(calls, r=>r.vi_offer, 'rgba(58,176,122,0.35)', 'rgba(58,176,122,0.5)',  [2,3]);
+    // Área entre bid y offer (calls)
+    const cBid  = calls.filter(r=>r.vi_bid>0);
+    const cOff  = calls.filter(r=>r.vi_offer>0);
+    if(cBid.length>=2&&cOff.length>=2){
+      ctx.beginPath();
+      cBid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_bid)):ctx.lineTo(xs(r.strike),ys(r.vi_bid)));
+      [...cOff].reverse().forEach(r=>ctx.lineTo(xs(r.strike),ys(r.vi_offer)));
+      ctx.closePath(); ctx.fillStyle='rgba(58,176,122,0.06)'; ctx.fill();
+    }
+    // IV Últ calls — línea sólida + puntos grandes
+    const cUlt = calls.filter(r=>r.vol_implicita>0);
+    if(cUlt.length>=2){
+      ctx.strokeStyle='rgba(58,176,122,0.6)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
+      ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita)));
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(58,176,122,0.85)'; ctx.fill(); });
+  }
+  if(showPuts){
+    drawSerie(puts, r=>r.vi_bid,   'rgba(192,57,43,0.35)', 'rgba(192,57,43,0.5)',  [2,3]);
+    drawSerie(puts, r=>r.vi_offer, 'rgba(192,57,43,0.35)', 'rgba(192,57,43,0.5)',  [2,3]);
+    const pBid  = puts.filter(r=>r.vi_bid>0);
+    const pOff  = puts.filter(r=>r.vi_offer>0);
+    if(pBid.length>=2&&pOff.length>=2){
+      ctx.beginPath();
+      pBid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_bid)):ctx.lineTo(xs(r.strike),ys(r.vi_bid)));
+      [...pOff].reverse().forEach(r=>ctx.lineTo(xs(r.strike),ys(r.vi_offer)));
+      ctx.closePath(); ctx.fillStyle='rgba(192,57,43,0.06)'; ctx.fill();
+    }
+    const pUlt = puts.filter(r=>r.vol_implicita>0);
+    if(pUlt.length>=2){
+      ctx.strokeStyle='rgba(192,57,43,0.6)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
+      ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita)));
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(192,57,43,0.85)'; ctx.fill(); });
+  }
+
+  // Leyenda
+  let lx = pad.l;
+  const ly = pad.t - 14;
+  const legendItems = [];
+  if(showCalls) legendItems.push(['CALL Últ','rgba(58,176,122,0.85)',false],['CALL Bid/Off','rgba(58,176,122,0.5)',true]);
+  if(showPuts)  legendItems.push(['PUT Últ','rgba(192,57,43,0.85)',false],['PUT Bid/Off','rgba(192,57,43,0.5)',true]);
+  ctx.font='9px monospace'; ctx.textAlign='left';
+  for(const [label,col,isDash] of legendItems){
+    ctx.beginPath(); ctx.arc(lx+4,ly,4,0,Math.PI*2);
+    ctx.fillStyle = isDash ? 'transparent' : col; ctx.fill();
+    if(isDash){ ctx.strokeStyle=col; ctx.lineWidth=1; ctx.stroke(); }
+    ctx.fillStyle='#c8c0b0'; ctx.fillText(label, lx+12, ly+3);
+    lx += ctx.measureText(label).width + 24;
+  }
+
+  // Tooltip
   canvas.onmousemove = e => {
     const rect=canvas.getBoundingClientRect();
     const mx=e.clientX-rect.left, my=e.clientY-rect.top;
     let best=null, bd=20;
-    rows.forEach(r=>{ const d=Math.hypot(xs(r.strike)-mx,ys(r.vol_implicita)-my); if(d<bd){bd=d;best=r;} });
+    visRows.forEach(r=>{
+      [['vol_implicita',r.vol_implicita],['vi_bid',r.vi_bid],['vi_offer',r.vi_offer]].forEach(([field,val])=>{
+        if(!(val>0)) return;
+        const d=Math.hypot(xs(r.strike)-mx,ys(val)-my);
+        if(d<bd){bd=d;best={r,field,val};}
+      });
+    });
     document.getElementById('stt').innerHTML = best
-      ? `<span style="color:${best.tipo==='CALL'?'#3ab07a':'#c0392b'}">${esc(best.tipo)}</span> · ${esc(best.symbol)} · $${fmt(best.strike)} · IV <span style="color:#C9960A">${best.vol_implicita.toFixed(2)}%</span> · Último $${fmt(best.ultimo_precio)} · OI ${fmtN(best.open_interest)}`
+      ? `<span style="color:${best.r.tipo==='CALL'?'#3ab07a':'#c0392b'}">${esc(best.r.tipo)}</span> · ${esc(best.r.symbol)} · $${fmt(best.r.strike)} · <span style="color:#706858">${best.field==='vol_implicita'?'IV Últ':best.field==='vi_bid'?'VI Bid':'VI Offer'}</span> <span style="color:#C9960A">${best.val.toFixed(2)}%</span> · Último $${fmt(best.r.ultimo_precio)} · OI ${fmtN(best.r.open_interest)}`
       : '';
   };
   canvas.onmouseleave = ()=>{ document.getElementById('stt').innerHTML=''; };
+}
+
+function setSmileTipo(v) {
+  state.smileTipo = v;
+  renderSmile();
 }
 
 function renderCadena() {
@@ -681,7 +778,7 @@ function renderCadena() {
       <th>Strike</th>
       <th class="center">Moneyness</th>
       <th>Bid</th>
-      <th>Ask</th>
+      <th>Offer</th>
       <th>Último</th>
       <th>Apertura</th>
       <th>Mín</th>
