@@ -791,10 +791,23 @@ function renderSmile() {
 }
 
 function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
-    xMin, xMax, yMin, yMax, spot, sMin, sMax,
+    xMin, xMax, yMinFull, yMaxFull, spot, sMin, sMax,
     showCalls, showPuts, soloUno, calls, puts, callsBO, putsBO, visRows, legendItems, ly) {
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle='#12100a'; ctx.fillRect(0,0,W,H);
+  // Recalcular rango Y con solo los puntos en el rango X visible
+  const inView = r => r.strike >= xMin && r.strike <= xMax;
+  const yVals = [
+    ...(showCalls ? calls.filter(inView).map(r=>r.vol_implicita).filter(v=>v>0) : []),
+    ...(showPuts  ? puts.filter(inView).map(r=>r.vol_implicita).filter(v=>v>0)  : []),
+    ...(showCalls && soloUno ? callsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)) : []),
+    ...(showPuts  && soloUno ? putsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0))  : []),
+  ];
+  const yRawMin = yVals.length ? Math.min(...yVals) : yMinFull;
+  const yRawMax = yVals.length ? Math.max(...yVals) : yMaxFull;
+  const yPadDyn = (yRawMax - yRawMin) * 0.12 || 1;
+  const yMin = yRawMin - yPadDyn;
+  const yMax = yRawMax + yPadDyn;
   const xs = s => pad.l + (xMax===xMin ? cW/2 : (s-xMin)/(xMax-xMin)*cW);
   const ys = v => pad.t + cH - (yMax===yMin ? cH/2 : (v-yMin)/(yMax-yMin)*cH);
   // Grid Y
