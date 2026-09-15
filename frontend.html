@@ -636,7 +636,10 @@ function renderSmile() {
       <div style="padding:16px 20px;overflow:auto;height:100%">
         <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;margin-bottom:14px">
           <canvas id="sc" width="1200" height="507" style="width:100%;height:507px;cursor:grab"></canvas>
-          <div id="stt" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#c8c0b0;margin-top:4px;min-height:14px"></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;min-height:14px">
+            <div id="stt" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#c8c0b0"></div>
+            <button onclick="resetSmileZoom()" style="padding:2px 8px;background:none;border:0.5px solid #2a2510;color:#706858;cursor:pointer;font-size:9px;font-family:'JetBrains Mono',monospace;border-radius:3px" title="Restablecer zoom">↺ zoom</button>
+          </div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
           ${[
