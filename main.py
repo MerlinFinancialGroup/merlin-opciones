@@ -349,36 +349,120 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
 
     return rows, resumen, fecha_str
 
-# ── Descarga automática PDF IAMC ───────────────────────────────────────────────
-def _iamc_url(d: date) -> str:
-    """URL del PDF para una fecha dada."""
-    return f"{IAMC_BASE}{d.day:02d}{d.month:02d}{d.year}"
+IAMC_DIARIO_URL = "https://www.iamc.com.ar/informediario/"
 
 async def _extraer_pdf_url(html: str) -> str | None:
-    """
-    Extrae la URL directa del PDF desde el HTML de la página IAMC.
-    El PDF está hosteado en iamcweb.prod.ingecloud.com/TempFiles/
-    """
-    # Buscar URLs de PDF en el HTML
+    """Extrae la URL del PDF de opciones desde el HTML de /informediario/"""
+    # Buscar href que contenga opciones o PDF
     patterns = [
-        r'https?://[^\s"\'<>]+\.pdf',
-        r'src=["\']([^"\']+\.pdf)["\']',
-        r'href=["\']([^"\']+\.pdf)["\']',
-        r'url=["\']([^"\']+\.pdf)["\']',
-        r'file=["\']([^"\']+\.pdf)["\']',
-        r'(https?://iamcweb[^\s"\'<>]+)',
-        r'(https?://[^\s"\'<>]+TempFiles[^\s"\'<>]+)',
+        r'href=["\']([^"\']*[Oo]pciones[^"\']*\.pdf)["\']',
+        r'href=["\']([^"\']*TempFiles[^"\']*\.pdf)["\']',
+        r'href=["\']([^"\']*\.pdf)["\']',
+        r'(https?://[^\s"\'<>]*[Oo]pciones[^\s"\'<>]*\.pdf)',
+        r'(https?://iamcweb[^\s"\'<>]+\.pdf)',
     ]
     for pattern in patterns:
         matches = re.findall(pattern, html, re.IGNORECASE)
         for m in matches:
-            url = m if m.startswith('http') else m
-            if '.pdf' in url.lower() or 'TempFiles' in url:
-                print(f"URL PDF encontrada: {url}")
-                return url
+            url = m if m.startswith('http') else f"https://www.iamc.com.ar{m}"
+            print(f"  URL PDF candidata: {url}")
+            return url
     return None
 
 async def descargar_iamc_pdf(target_date: date = None) -> bool:
+    """
+    Descarga el PDF de opciones del IAMC desde la página pública /informediario/
+    """
+    if target_date is None:
+        target_date = datetime.now(TZ_ARG).date()
+
+    headers_browser = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+        "Accept-Language": "es-AR,es;q=0.9",
+        "Referer": "https://www.iamc.com.ar/",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as client:
+            # Paso 1: página pública sin login
+            print(f"Bajando {IAMC_DIARIO_URL}")
+            r_page = await client.get(IAMC_DIARIO_URL, headers=headers_browser)
+            if r_page.status_code != 200:
+                print(f"  /informediario/ status={r_page.status_code}")
+                state["error"] = f"IAMC /informediario/ status {r_page.status_code}"
+                return False
+
+            html = r_page.text
+            print(f"  HTML OK ({len(html)} bytes)")
+
+            # Paso 2: extraer URL del PDF de opciones
+            # Buscar el link que dice "Informe Diario Opciones"
+            # Estructura: <a href="...">..Opciones..</a> o botón con icono descarga
+            pdf_url = None
+
+            # Patrón principal: anchor con texto opciones
+            m = re.search(
+                r'href=["\']([^"\']+)["\'][^>]*>[^<]*[Oo]pciones[^<]*<',
+                html, re.IGNORECASE
+            )
+            if not m:
+                # Patrón inverso: texto opciones seguido del href
+                m = re.search(
+                    r'[Oo]pciones[^<]{0,300}href=["\']([^"\']+)["\']',
+                    html, re.IGNORECASE | re.DOTALL
+                )
+            if m:
+                raw = m.group(1)
+                pdf_url = raw if raw.startswith('http') else f"https://www.iamc.com.ar{raw}"
+                print(f"  Link opciones: {pdf_url}")
+
+            if not pdf_url:
+                pdf_url = await _extraer_pdf_url(html)
+
+            if not pdf_url:
+                print(f"  No se encontró URL de PDF. HTML snippet:\n{html[500:1500]}")
+                state["error"] = "No se encontró link del PDF en /informediario/"
+                state["descarga_ok"] = False
+                return False
+
+            # Paso 3: descargar el PDF
+            print(f"  Descargando PDF: {pdf_url}")
+            r_pdf = await client.get(pdf_url, headers={
+                **headers_browser,
+                "Accept": "application/pdf,*/*",
+                "Referer": IAMC_DIARIO_URL,
+            })
+            ct = r_pdf.headers.get("content-type", "")
+            if r_pdf.status_code == 200 and (
+                "pdf" in ct.lower() or r_pdf.content[:4] == b'%PDF'
+            ):
+                pdf_bytes = r_pdf.content
+                print(f"  PDF OK: {len(pdf_bytes)} bytes")
+                rows, resumen, fecha_str = parse_iamc_pdf(pdf_bytes)
+                print(f"  Parseado: {len(rows)} opciones")
+                d = target_date
+                _pg_save_pdf(pdf_bytes, d.isoformat())
+                if rows:
+                    _pg_save_opciones(rows, d.isoformat())
+                state["opciones"]    = rows
+                state["resumen"]     = resumen
+                state["fecha"]       = d.isoformat()
+                state["updated_at"]  = datetime.now(TZ_ARG).isoformat()
+                state["descarga_ok"] = True
+                state["error"]       = None
+                return True
+            else:
+                print(f"  PDF no válido (status={r_pdf.status_code}, ct={ct})")
+                state["error"] = f"PDF inválido status={r_pdf.status_code}"
+                return False
+
+    except Exception as e:
+        print(f"Error descargando IAMC: {e}")
+        import traceback; traceback.print_exc()
+        state["error"] = str(e)
+        state["descarga_ok"] = False
+        return False
     """
     Intenta descargar el PDF de IAMC para la fecha dada (o hoy).
     Flujo:
@@ -678,35 +762,26 @@ async def admin_upload_pdf(pdf: UploadFile = File(...)):
     }
 
 @app.get("/admin/debug-iamc-html")
-async def debug_iamc_html(fecha_str: str = Query(None)):
-    """Devuelve el HTML crudo de la página IAMC para debug."""
-    if fecha_str:
-        try: d = date.fromisoformat(fecha_str)
-        except: d = datetime.now(TZ_ARG).date()
-    else:
-        d = datetime.now(TZ_ARG).date()
-    # Ir al día hábil anterior si es finde
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    url = _iamc_url(d)
+async def debug_iamc_html():
+    """Inspecciona el HTML de /informediario/ para debug del scraping."""
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as client:
-            r = await client.get(url, headers={
+            r = await client.get(IAMC_DIARIO_URL, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Accept": "text/html,*/*",
             })
-            # Buscar URLs de PDF en el HTML
-            pdf_urls = re.findall(r'https?://[^\s"\'<>]*(?:\.pdf|TempFiles)[^\s"\'<>]*', r.text, re.IGNORECASE)
-            ingecloud_urls = re.findall(r'https?://iamcweb[^\s"\'<>]+', r.text, re.IGNORECASE)
+            html = r.text
+            pdf_urls  = re.findall(r'href=["\']([^"\']+\.pdf)["\']', html, re.IGNORECASE)
+            all_hrefs = re.findall(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            opciones_ctx = re.findall(r'.{0,100}[Oo]pciones.{0,100}', html)
             return {
-                "fecha": d.isoformat(),
-                "url": url,
+                "url": IAMC_DIARIO_URL,
                 "status": r.status_code,
-                "content_type": r.headers.get("content-type"),
-                "html_length": len(r.text),
-                "pdf_urls_found": pdf_urls,
-                "ingecloud_urls_found": ingecloud_urls,
-                "html_snippet": r.text[:2000],
+                "html_length": len(html),
+                "pdf_hrefs": pdf_urls[:10],
+                "all_hrefs": all_hrefs[:30],
+                "opciones_contexts": opciones_ctx[:5],
+                "html_snippet": html[1000:3000],
             }
     except Exception as e:
         return {"error": str(e)}
