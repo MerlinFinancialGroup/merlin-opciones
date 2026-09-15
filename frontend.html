@@ -759,12 +759,13 @@ function renderSmile() {
   canvas.onmouseleave = ()=>{ document.getElementById('stt').innerHTML=''; };
 
   // Zoom con rueda del mouse (eje X, centrado en el cursor)
-  if(!canvas._zoomBound){
-    canvas._zoomBound = true;
-    canvas._zoom = { xMin: sMin, xMax: sMax };
-  } else {
-    canvas._zoom = { xMin: sMin, xMax: sMax };
+  // Preservar zoom entre refreshes — solo resetear si cambió el subyacente o vencimiento
+  const zoomKey = (state.currentSuby||'') + '|' + (document.getElementById('ctrl-vto').value||'');
+  if(!state._smileZoom || state._smileZoomKey !== zoomKey){
+    state._smileZoom = { xMin: sMin, xMax: sMax };
+    state._smileZoomKey = zoomKey;
   }
+  canvas._zoom = state._smileZoom;
   canvas.onwheel = e => {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
@@ -777,6 +778,7 @@ function renderSmile() {
     const newMin = Math.max(sMin, pivot - (pivot - z.xMin) / range * newRange);
     const newMax = Math.min(sMax, newMin + newRange);
     canvas._zoom = { xMin: newMin, xMax: Math.min(sMax, newMax) };
+    state._smileZoom = canvas._zoom;
     // Redibujar solo el canvas sin re-renderizar todo
     redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
       canvas._zoom.xMin, canvas._zoom.xMax, yMin, yMax,
