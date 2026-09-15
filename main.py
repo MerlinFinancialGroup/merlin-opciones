@@ -797,27 +797,42 @@ async def debug_parser():
     if not pdf_bytes:
         return {"error": "No hay PDF cargado"}
     resultado = []
+    page_texts = []
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for i, page in enumerate(pdf.pages[:15]):
+            total_pages = len(pdf.pages)
+            # Buscar páginas con GGAL
+            ggal_pages = []
+            for i, page in enumerate(pdf.pages):
                 text = page.extract_text() or ""
-                if "GGAL" not in text and "GALICIA" not in text:
-                    continue
+                if "GGAL" in text or "GALICIA" in text:
+                    ggal_pages.append(i)
+                    page_texts.append({"pagina": i, "texto_primeras_lineas": text[:300]})
+
+            # Tomar primera página de GGAL y mostrar tablas crudas
+            if ggal_pages:
+                page = pdf.pages[ggal_pages[0]]
                 tables = page.extract_tables()
-                for t_idx, table in enumerate(tables):
-                    for r_idx, row in enumerate(table[:6]):
-                        if not row or not row[0]: continue
-                        if not re.match(r'^[A-Z]{2,6}[CV]?\d', str(row[0]).strip()):
-                            continue
+                for t_idx, table in enumerate(tables[:3]):
+                    for r_idx, row in enumerate(table[:8]):
                         resultado.append({
-                            "pagina": i, "tabla": t_idx, "fila": r_idx,
-                            "raw": row, "len": len(row),
+                            "pagina": ggal_pages[0],
+                            "tabla": t_idx,
+                            "fila": r_idx,
+                            "raw": row,
+                            "len": len(row) if row else 0,
                         })
-                        if len(resultado) >= 6: break
-                if len(resultado) >= 6: break
+
     except Exception as e:
-        return {"error": str(e)}
-    return {"fecha": fecha, "filas_muestra": resultado}
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
+    return {
+        "fecha": fecha,
+        "total_pages": total_pages,
+        "ggal_pages": ggal_pages,
+        "page_texts": page_texts[:3],
+        "filas_muestra": resultado,
+    }
 
 @app.get("/admin/debug-iamc-html")
 async def debug_iamc_html():
