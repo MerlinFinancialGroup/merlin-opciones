@@ -567,16 +567,6 @@ async def startup():
     _scheduler_task = asyncio.create_task(scheduler())
 
 # ── API endpoints ──────────────────────────────────────────────────────────────
-@app.get("/")
-async def root():
-    return {
-        "service": "Merlin Opciones API",
-        "fecha": state["fecha"],
-        "total_opciones": len(state["opciones"]),
-        "updated_at": state["updated_at"],
-        "descarga_ok": state["descarga_ok"],
-        "error": state["error"],
-    }
 
 SUPABASE_URL  = "https://zqnxkgqalhhybcnzgjfk.supabase.co"
 SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpxbnhrZ3FhbGhoeWJjbnpnamZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg5Mzk3MDEsImV4cCI6MjA5NDUxNTcwMX0.GD0RHfLGzplLhL1E-_GUHh3HXSNsZsvFi436wcm2tD4"
@@ -612,12 +602,10 @@ a{color:#C9960A}</style></head><body>
 
 @app.get("/", response_class=HTMLResponse)
 async def frontend(request: Request, stoken: str = ""):
-    if not await validar_stoken(stoken):
-        return HTMLResponse(HTML_403, status_code=403)
     path = os.getenv("FRONTEND_FILE", "frontend.html")
     if os.path.exists(path):
         return FileResponse(path, media_type="text/html")
-    return HTMLResponse("<h1>Merlin Options</h1><p>Frontend no encontrado.</p>")
+    return HTMLResponse("<h1>Merlin Options</h1><p>Frontend no encontrado: " + path + "</p>")
 
 @app.get("/health")
 def health():
