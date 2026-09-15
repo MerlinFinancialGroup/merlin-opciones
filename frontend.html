@@ -108,8 +108,7 @@ td.muted{color:#3a3020}
 
 /* ── FECHA BADGE ── */
 .fecha-badge{font-family:'JetBrains Mono',monospace;font-size:9px;padding:2px 7px;border-radius:3px;background:rgba(201,150,10,.1);color:#C9960A;border:0.5px solid rgba(201,150,10,.2)}
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-</head>
+
 <body>
 
 <!-- AUTH SCREEN -->
@@ -351,8 +350,8 @@ async function renderView() {
 let smileChart = null;
 
 async function renderSmile() {
-  const vto   = document.getElementById('ctrl-vto').value;
-  const show  = document.getElementById('ctrl-show').value;
+  const vto  = document.getElementById('ctrl-vto').value;
+  const show = document.getElementById('ctrl-show').value;
 
   let rows = state.cadena.filter(r => r.vol_implicita > 0 && r.strike > 0);
   if (vto)   rows = rows.filter(r => r.vencimiento === vto);
@@ -365,21 +364,26 @@ async function renderSmile() {
   }
 
   const precioSuby = rows.find(r => r.precio_suby)?.precio_suby || 0;
-
-  // Separar calls y puts, ordenar por strike
   const calls = rows.filter(r => r.tipo === 'CALL').sort((a,b) => a.strike - b.strike);
-  const puts  = rows.filter(r => r.tipo === 'PUT').sort((a,b) => a.strike - b.strike);
+  const puts  = rows.filter(r => r.tipo === 'PUT').sort((a,b)  => a.strike - b.strike);
+  const allIV = rows.map(r => r.vol_implicita);
+  const ivMin = Math.min(...allIV), ivMax = Math.max(...allIV);
+  const ivAvg = allIV.reduce((a,b)=>a+b,0)/allIV.length;
+  const atmRow = rows.reduce((best,r) => Math.abs(r.strike-precioSuby) < Math.abs((best?.strike||999999)-precioSuby) ? r : best, null);
+  const otmPut  = puts.filter(r => r.strike < precioSuby*0.95).at(-1);
+  const otmCall = calls.filter(r => r.strike > precioSuby*1.05)[0];
+  const skew = otmPut && otmCall ? (otmPut.vol_implicita - otmCall.vol_implicita).toFixed(2) : null;
 
-  // Para el eje X usamos moneyness: (Strike - Spot) / Spot * 100
-  const toMny = r => precioSuby ? ((r.strike - precioSuby) / precioSuby * 100) : r.strike;
+  const vtoLabel = vto === '2026-10-16' ? 'Octubre' : vto === '2026-12-18' ? 'Diciembre' : 'Todos';
 
   document.getElementById('content').innerHTML = `
-    <div style="padding:16px 20px;height:100%;display:flex;flex-direction:column;gap:16px;overflow:auto">
-      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;height:380px;flex-shrink:0">
+    <div style="padding:16px 20px;height:100%;display:flex;flex-direction:column;gap:14px;overflow:auto">
+      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;flex-shrink:0">
         <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#3a3020;margin-bottom:10px">
-          Volatilidad Implícita vs Strike — ${state.currentSuby} ${vto ? (vto==='2026-10-16'?'Octubre':'Diciembre') : 'Todos los vencimientos'}
+          IV Smile — ${state.currentSuby} · ${vtoLabel}
         </div>
-        <canvas id="smile-canvas" style="height:320px;width:100%"></canvas>
+        <canvas id="smile-canvas" width="900" height="320" style="width:100%;height:320px;cursor:crosshair"></canvas>
+        <div id="smile-tooltip" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#7a6a3a;margin-top:6px;height:16px"></div>
       </div>
       <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;flex-shrink:0">
         <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#3a3020;margin-bottom:8px">Estadísticas IV</div>
@@ -387,127 +391,133 @@ async function renderSmile() {
       </div>
     </div>`;
 
-  if (smileChart) { smileChart.destroy(); smileChart = null; }
-
-  // Dar tiempo al DOM para renderizar el canvas
-  await new Promise(r => setTimeout(r, 50));
-
+  await new Promise(r => setTimeout(r, 30));
   const canvas = document.getElementById('smile-canvas');
   if (!canvas) return;
-  canvas.height = 320;
-  const ctx = canvas.getContext('2d');
-  smileChart = new Chart(ctx, {
-    type: 'scatter',
-    data: {
-      datasets: [
-        {
-          label: 'CALL',
-          data: calls.map(r => ({ x: toMny(r), y: r.vol_implicita, strike: r.strike, sym: r.symbol, ultimo: r.ultimo_precio, oi: r.open_interest })),
-          backgroundColor: 'rgba(58,176,122,0.7)',
-          pointRadius: r => Math.min(3 + Math.log10((r?.raw?.oi||1)+1)*2, 10),
-          pointHoverRadius: 8,
-          borderColor: '#3ab07a',
-          borderWidth: 1,
-        },
-        {
-          label: 'PUT',
-          data: puts.map(r => ({ x: toMny(r), y: r.vol_implicita, strike: r.strike, sym: r.symbol, ultimo: r.ultimo_precio, oi: r.open_interest })),
-          backgroundColor: 'rgba(192,57,43,0.7)',
-          pointRadius: r => Math.min(3 + Math.log10((r?.raw?.oi||1)+1)*2, 10),
-          pointHoverRadius: 8,
-          borderColor: '#c0392b',
-          borderWidth: 1,
-        },
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          labels: { color: '#7a6a3a', font: { family: 'JetBrains Mono', size: 11 } }
-        },
-        tooltip: {
-          backgroundColor: '#1a1710',
-          borderColor: '#2a2510',
-          borderWidth: 1,
-          titleColor: '#e8e0cc',
-          bodyColor: '#7a6a3a',
-          callbacks: {
-            title: items => items[0]?.raw?.sym || '',
-            label: item => [
-              `Strike: $${fmt(item.raw.strike)}`,
-              `IV: ${item.raw.y?.toFixed(2)}%`,
-              `Último: $${fmt(item.raw.ultimo)}`,
-              `OI: ${fmtN(item.raw.oi)}`,
-            ],
-          }
-        }
-      },
-      scales: {
-        x: {
-          title: { display: true, text: 'Moneyness % (Strike vs Spot)', color: '#3a3020', font: { family: 'JetBrains Mono', size: 10 } },
-          grid: { color: '#1a1710' },
-          ticks: { color: '#5a4e2a', font: { family: 'JetBrains Mono', size: 10 },
-            callback: v => (v>0?'+':'')+v.toFixed(1)+'%' },
-        },
-        y: {
-          title: { display: true, text: 'IV%', color: '#3a3020', font: { family: 'JetBrains Mono', size: 10 } },
-          grid: { color: '#1a1710' },
-          ticks: { color: '#5a4e2a', font: { family: 'JetBrains Mono', size: 10 },
-            callback: v => v.toFixed(1)+'%' },
-        }
-      }
-    }
-  });
 
-  // Línea vertical en ATM (x=0)
-  const atmPlugin = {
-    id: 'atm_line',
-    afterDraw(chart) {
-      const {ctx, scales:{x,y}} = chart;
-      const xPos = x.getPixelForValue(0);
-      ctx.save();
-      ctx.strokeStyle = 'rgba(201,150,10,0.4)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4,4]);
-      ctx.beginPath();
-      ctx.moveTo(xPos, y.top);
-      ctx.lineTo(xPos, y.bottom);
-      ctx.stroke();
-      ctx.fillStyle = '#C9960A';
-      ctx.font = '9px JetBrains Mono';
-      ctx.fillText('ATM', xPos+4, y.top+12);
-      ctx.restore();
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.offsetWidth, H = 320;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const pad = {l:52, r:20, t:16, b:36};
+  const cW = W - pad.l - pad.r;
+  const cH = H - pad.t - pad.b;
+
+  // Rangos
+  const strikes = rows.map(r => r.strike);
+  const sMin = Math.min(...strikes), sMax = Math.max(...strikes);
+  const ivPad = (ivMax - ivMin) * 0.1 || 2;
+  const yMin = ivMin - ivPad, yMax = ivMax + ivPad;
+
+  const xS = s => pad.l + (s - sMin) / (sMax - sMin) * cW;
+  const yS = v => pad.t + cH - (v - yMin) / (yMax - yMin) * cH;
+
+  // Fondo
+  ctx.fillStyle = '#12100a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid horizontal
+  const ySteps = 5;
+  for (let i = 0; i <= ySteps; i++) {
+    const v = yMin + (yMax - yMin) * i / ySteps;
+    const y = yS(v);
+    ctx.strokeStyle = '#1a1710'; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    ctx.fillStyle = '#3a3020'; ctx.font = '9px JetBrains Mono'; ctx.textAlign = 'right';
+    ctx.fillText(v.toFixed(1) + '%', pad.l - 4, y + 3);
+  }
+
+  // Grid vertical
+  const xSteps = 6;
+  for (let i = 0; i <= xSteps; i++) {
+    const s = sMin + (sMax - sMin) * i / xSteps;
+    const x = xS(s);
+    ctx.strokeStyle = '#1a1710'; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, H - pad.b); ctx.stroke();
+    ctx.fillStyle = '#3a3020'; ctx.font = '9px JetBrains Mono'; ctx.textAlign = 'center';
+    ctx.fillText('$' + Math.round(s).toLocaleString('es-AR'), x, H - pad.b + 14);
+  }
+
+  // Línea ATM
+  if (precioSuby >= sMin && precioSuby <= sMax) {
+    const xATM = xS(precioSuby);
+    ctx.strokeStyle = 'rgba(201,150,10,0.35)'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(xATM, pad.t); ctx.lineTo(xATM, H - pad.b); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#C9960A'; ctx.font = '9px JetBrains Mono'; ctx.textAlign = 'center';
+    ctx.fillText('ATM', xATM, pad.t + 10);
+  }
+
+  // Línea de tendencia suave (calls)
+  const drawLine = (pts, color) => {
+    if (pts.length < 2) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]);
+    ctx.beginPath();
+    pts.forEach((r, i) => i === 0 ? ctx.moveTo(xS(r.strike), yS(r.vol_implicita)) : ctx.lineTo(xS(r.strike), yS(r.vol_implicita)));
+    ctx.stroke(); ctx.setLineDash([]);
+  };
+  drawLine(calls, 'rgba(58,176,122,0.4)');
+  drawLine(puts,  'rgba(192,57,43,0.4)');
+
+  // Puntos
+  const drawPoints = (pts, color) => {
+    pts.forEach(r => {
+      const x = xS(r.strike), y = yS(r.vol_implicita);
+      const radius = Math.min(3 + Math.log10((r.open_interest||1)+1) * 1.5, 9);
+      ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2);
+      ctx.fillStyle = color; ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.lineWidth = 0.5; ctx.stroke();
+    });
+  };
+  drawPoints(calls, 'rgba(58,176,122,0.85)');
+  drawPoints(puts,  'rgba(192,57,43,0.85)');
+
+  // Leyenda
+  ctx.fillStyle = '#3ab07a'; ctx.beginPath(); ctx.arc(pad.l + 10, pad.t + 6, 5, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#7a6a3a'; ctx.font = '10px JetBrains Mono'; ctx.textAlign = 'left';
+  ctx.fillText('CALL', pad.l + 18, pad.t + 10);
+  ctx.fillStyle = '#c0392b'; ctx.beginPath(); ctx.arc(pad.l + 60, pad.t + 6, 5, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#7a6a3a'; ctx.fillText('PUT', pad.l + 68, pad.t + 10);
+
+  // Hover
+  const allPts = [...calls, ...puts];
+  canvas.onmousemove = e => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    let closest = null, minDist = 20;
+    allPts.forEach(r => {
+      const dx = xS(r.strike) - mx, dy = yS(r.vol_implicita) - my;
+      const d = Math.sqrt(dx*dx + dy*dy);
+      if (d < minDist) { minDist = d; closest = r; }
+    });
+    const tt = document.getElementById('smile-tooltip');
+    if (closest) {
+      tt.innerHTML = `<span style="color:${closest.tipo==='CALL'?'#3ab07a':'#c0392b'}">${closest.tipo}</span> · ${closest.symbol} · Strike $${fmt(closest.strike)} · IV <span style="color:#C9960A">${closest.vol_implicita.toFixed(2)}%</span> · Último $${fmt(closest.ultimo_precio)} · OI ${fmtN(closest.open_interest)}`;
+    } else {
+      tt.innerHTML = '';
     }
   };
-  smileChart.register ? smileChart.register(atmPlugin) : Chart.register(atmPlugin);
-  smileChart.update();
+  canvas.onmouseleave = () => { document.getElementById('smile-tooltip').innerHTML = ''; };
 
   // Stats
-  const allIV = rows.map(r => r.vol_implicita).filter(Boolean);
-  const ivMin = Math.min(...allIV), ivMax = Math.max(...allIV);
-  const ivAvg = allIV.reduce((a,b)=>a+b,0)/allIV.length;
-  const atmRow = rows.reduce((best,r) => Math.abs(r.strike-precioSuby) < Math.abs((best?.strike||999999)-precioSuby) ? r : best, null);
-  const skew = calls.length && puts.length ? (() => {
-    const otmPut  = puts.filter(r => r.strike < precioSuby*0.95).at(-1);
-    const otmCall = calls.filter(r => r.strike > precioSuby*1.05)[0];
-    return otmPut && otmCall ? (otmPut.vol_implicita - otmCall.vol_implicita).toFixed(2) : null;
-  })() : null;
-
   document.getElementById('smile-stats').innerHTML = [
-    { l:'IV Mínima',  v: ivMin.toFixed(2)+'%', c:'' },
-    { l:'IV Máxima',  v: ivMax.toFixed(2)+'%', c:'' },
-    { l:'IV Promedio',v: ivAvg.toFixed(2)+'%', c:'gold' },
-    { l:'IV ATM',     v: atmRow ? atmRow.vol_implicita.toFixed(2)+'%' : '—', c:'gold' },
-    { l:'Skew (Put-Call 5%)', v: skew!=null ? (skew>0?'+':'')+skew+'%' : '—', c: skew>0?'neg':skew<0?'pos':'' },
-    { l:'VH 40 ruedas', v: rows[0]?.vol_hist_40r?.toFixed(2)+'%' || '—', c:'muted' },
-    { l:'Strikes con IV', v: allIV.length, c:'' },
-    { l:'Spot', v: '$'+fmt(precioSuby), c:'gold' },
+    { l:'IV Mínima',  v: ivMin.toFixed(2)+'%' },
+    { l:'IV Máxima',  v: ivMax.toFixed(2)+'%' },
+    { l:'IV Promedio',v: ivAvg.toFixed(2)+'%', gold:true },
+    { l:'IV ATM',     v: atmRow ? atmRow.vol_implicita.toFixed(2)+'%' : '—', gold:true },
+    { l:'Skew (Put-Call 5%)', v: skew!=null?(skew>0?'+':'')+skew+'%':'—', cls: skew>0?'neg':skew<0?'pos':'' },
+    { l:'VH 40 ruedas', v: (rows[0]?.vol_hist_40r?.toFixed(2)||'—')+'%' },
+    { l:'Strikes con IV', v: allIV.length },
+    { l:'Spot', v: '$'+fmt(precioSuby), gold:true },
   ].map(s=>`
     <div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
       <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.8px;color:#3a3020;margin-bottom:3px">${s.l}</div>
-      <div style="font-size:14px;font-weight:600;font-family:'JetBrains Mono',monospace" class="${s.c}">${s.v}</div>
+      <div style="font-size:14px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${s.gold?'#C9960A':s.cls==='neg'?'#c0392b':s.cls==='pos'?'#3ab07a':'#e8e0cc'}">${s.v}</div>
     </div>`).join('');
 }
 
