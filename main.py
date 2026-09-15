@@ -1245,11 +1245,11 @@ def health():
 @app.get("/api/opciones/cadena")
 async def get_cadena(
     subyacente: str = Query(None),
-    tipo: str = Query(None),       # CALL / PUT
-    vencimiento: str = Query(None), # 2026-10-16 / 2026-12-18
+    tipo: str = Query(None),
+    vencimiento: str = Query(None),
     fecha: str = Query(None),
 ):
-    """Devuelve la cadena de opciones filtrable por subyacente, tipo y vencimiento."""
+    """Devuelve la cadena de opciones con bid/ask y VI de bid/offer/último desde Veta."""
     rows = state["opciones"]
     if not rows and fecha:
         rows = _pg_load_opciones(fecha)
@@ -1259,7 +1259,44 @@ async def get_cadena(
         rows = [r for r in rows if (r.get("tipo") or "").upper() == tipo.upper()]
     if vencimiento:
         rows = [r for r in rows if r.get("vencimiento") == vencimiento]
-    return {"fecha": state["fecha"], "total": len(rows), "data": rows}
+
+    # Enriquecer con bid/ask y VI de Veta si hay books disponibles
+    TASA_VTO = {"2026-10-16": 0.2316, "2026-12-18": 0.2418}
+    result = []
+    for r in rows:
+        row = dict(r)
+        sec_id = _symbol_to_security_id(row.get("symbol",""))
+        book = _veta_books.get(sec_id)
+        if book:
+            bids = book.get("bids", [])
+            asks = book.get("asks", [])
+            bid = bids[0]["price"] if bids else None
+            ask = asks[0]["price"] if asks else None
+            row["bid"]     = bid
+            row["ask"]     = ask
+            row["qty_bid"] = bids[0]["qty"] if bids else None
+            row["qty_ask"] = asks[0]["qty"] if asks else None
+            row["book_ts"] = book.get("ts")
+
+            # Calcular VI de bid, offer y último
+            S    = row.get("precio_suby")
+            K    = row.get("strike")
+            dias = row.get("dias_vto")
+            tipo_op = row.get("tipo")
+            vto  = row.get("vencimiento")
+            r_rate = TASA_VTO.get(vto, 0.2316)
+            if S and K and dias and dias > 0:
+                T = dias / 365.0
+                if bid:   row["vi_bid"]   = _calc_iv(bid,   S, K, T, r_rate, tipo_op)
+                if ask:   row["vi_offer"] = _calc_iv(ask,   S, K, T, r_rate, tipo_op)
+        else:
+            row["bid"] = row["ask"] = row["qty_bid"] = row["qty_ask"] = row["book_ts"] = None
+            row["vi_bid"] = row["vi_offer"] = None
+
+        # vi_ultimo ya viene del parser o _enrich_iv
+        result.append(row)
+
+    return {"fecha": state["fecha"], "total": len(result), "data": result}
 
 @app.get("/api/opciones/subyacentes")
 async def get_subyacentes():
