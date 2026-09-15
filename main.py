@@ -1,9 +1,9 @@
 import os, asyncio, httpx, io, re, json
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, UploadFile, File, Query
+from fastapi import FastAPI, UploadFile, File, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 
 try:
     import pdfplumber
@@ -577,6 +577,47 @@ async def root():
         "descarga_ok": state["descarga_ok"],
         "error": state["error"],
     }
+
+SUPABASE_URL  = "https://zqnxkgqalhhybcnzgjfk.supabase.co"
+SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpxbnhrZ3FhbGhoeWJjbnpnamZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg5Mzk3MDEsImV4cCI6MjA5NDUxNTcwMX0.GD0RHfLGzplLhL1E-_GUHh3HXSNsZsvFi436wcm2tD4"
+_token_cache: dict = {}
+
+async def validar_stoken(token: str) -> bool:
+    if not token: return False
+    cached = _token_cache.get(token)
+    if cached and (datetime.now().timestamp() - cached["ts"]) < 300:
+        return cached["valid"]
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.post(
+                f"{SUPABASE_URL}/rest/v1/rpc/validate_session",
+                headers={"Content-Type":"application/json","apikey":SUPABASE_ANON,"Authorization":f"Bearer {SUPABASE_ANON}"},
+                json={"p_token": token},
+            )
+            valid = r.status_code == 200 and r.json() == True
+            _token_cache[token] = {"valid": valid, "ts": datetime.now().timestamp()}
+            return valid
+    except:
+        return cached["valid"] if cached else False
+
+HTML_403 = """<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>body{background:#0e0d0a;color:#e8e0cc;font-family:'Segoe UI',sans-serif;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.box{text-align:center;border:0.5px solid #2a2510;padding:40px 60px;border-radius:12px;background:#12100a}
+h2{color:#C9960A;font-size:20px;margin-bottom:8px}p{color:#5a4e2a;font-size:13px}
+a{color:#C9960A}</style></head><body>
+<div class="box"><h2>Merlin Options</h2>
+<p>Acceso solo para suscriptores.<br>Ingresá desde <a href="https://merlin-financial-group.netlify.app">Merlin Financial Group</a></p>
+</div></body></html>"""
+
+@app.get("/", response_class=HTMLResponse)
+async def frontend(request: Request, stoken: str = ""):
+    if not await validar_stoken(stoken):
+        return HTMLResponse(HTML_403, status_code=403)
+    path = os.getenv("FRONTEND_FILE", "frontend.html")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="text/html")
+    return HTMLResponse("<h1>Merlin Options</h1><p>Frontend no encontrado.</p>")
 
 @app.get("/health")
 def health():
