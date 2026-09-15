@@ -1465,27 +1465,20 @@ async def _veta_ws_loop():
                 _veta_session["id"] = session_id
                 _veta_session["conn_id"] = conn_id
 
-                # Suscribir a todas las opciones — md para último operado, book para bid/offer
+                # Suscribir a todas las opciones (con o sin operaciones)
                 todas = [r["symbol"] for r in state["opciones"] if r.get("symbol")]
+                # Enviar en lotes de 50 para no saturar el WS
                 for i in range(0, len(todas), 50):
                     lote = todas[i:i+50]
-                    # md: trae bid/ask/último en tiempo real
-                    md_topics = [f"md.{_symbol_to_security_id(s)}" for s in lote]
-                    await ws.send(json.dumps({"_req": "S", "topicType": "md", "topics": md_topics, "replace": False}))
-                    await asyncio.sleep(0.05)
-                    # book: trae las puntas del book
-                    book_topics = [f"book.{_symbol_to_security_id(s)}" for s in lote]
-                    await ws.send(json.dumps({"_req": "S", "topicType": "book", "topics": book_topics, "replace": False}))
-                    await asyncio.sleep(0.05)
-                print(f"[Veta WS] Suscrito a {len(todas)} opciones (md + book)")
+                    topics = [f"md.{_symbol_to_security_id(s)}" for s in lote]
+                    msg = json.dumps({"_req": "S", "topicType": "md", "topics": topics, "replace": False})
+                    await ws.send(msg)
+                    await asyncio.sleep(0.1)
+                print(f"[Veta WS] Suscrito a {len(todas)} opciones (md)")
 
-                msg_count = 0
                 async for message in ws:
                     if isinstance(message, bytes): message = message.decode()
                     if message == 'pong': continue
-                    msg_count += 1
-                    if msg_count <= 5:
-                        print(f"[Veta WS] msg sample #{msg_count}: {message[:120]}")
                     if message.startswith('B:'):
                         sec_id, book = _parse_book_msg(message[2:])
                         if sec_id and book: _veta_books[sec_id] = book
