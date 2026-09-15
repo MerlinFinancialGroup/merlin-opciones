@@ -168,9 +168,8 @@ def _pg_load_opciones(fecha: str = None):
 # ── Mapeo prefijo de opción → subyacente ───────────────────────────────────────
 # La convención BYMA es estable: ticker de opción = prefijo + C/V + strike + serie.
 # Ej: GFGC4200OC → GFG + C + 4200 + OC (CALL 4200, serie octubre)
-# Este dict es LA fuente de verdad para asignar subyacente (el encabezado del PDF
-# se mezcla entre secciones). Si aparece un prefijo nuevo, se ve en
-# /admin/debug-symbols y se agrega acá.
+# Fuente de verdad para asignar subyacente (el encabezado del PDF se mezcla).
+# Si aparece un prefijo nuevo: /admin/debug-symbols → agregar acá.
 OPCION_MAP = {
     # Panel Merval
     "GFG":  "GGAL",   # Grupo Financiero Galicia
@@ -193,17 +192,17 @@ OPCION_MAP = {
     "EDN":  "EDN",
     "VIST": "VIST",
     "VIS":  "VIST",
-    "VST":  "VIST",   # FIX: prefijo real de Vista según log
-    "BMK":  "BYMA",   # BYMA — verificar con /admin/debug-symbols
-    "BYM":  "BYMA",
+    "VST":  "VIST",   # Vista (confirmado por debug-symbols)
+    "BMK":  "BYMA",
+    "BYM":  "BYMA",   # BYMA (confirmado por debug-symbols)
     "BYMA": "BYMA",
     # Resto del panel / líquidos
     "ALU":  "ALUA",
     "ALUA": "ALUA",
     "BMA":  "BMA",
-    "BHI":  "BHIP",   # FIX: Banco Hipotecario (según log)
-    "TEC":  "TECO2",  # FIX: Telecom Argentina (según log)
-    "TRA":  "TRAN",   # Transportadora Gas del Norte
+    "BHI":  "BHIP",   # Banco Hipotecario (confirmado)
+    "TEC":  "TECO2",  # Telecom (confirmado)
+    "TRA":  "TRAN",
     "TRAN": "TRAN",
     "COM":  "COME",
     "COME": "COME",
@@ -218,7 +217,7 @@ OPCION_MAP = {
     "IRC":  "IRCP",
     "CEP":  "CEPU",
     "CEPU": "CEPU",
-    "CEC":  "CEPU",   # FIX: aparenta ser Central Puerto — VERIFICAR con debug-symbols
+    "CEC":  "CEPU",   # confirmado por debug-symbols (suby_en_pdf: CEPU)
     "VAL":  "VALO",
     "VALO": "VALO",
     "TGN":  "TGNO4",
@@ -227,14 +226,97 @@ OPCION_MAP = {
     "GAL":  "GAMI",
 }
 
+# ── NUEVO: vencimiento por serie del símbolo (fallback si el texto no lo da) ───
+# El PDF usa series OC (octubre) y DI (diciembre). Se usa SOLO si ni el texto de
+# la página ni el aprendizaje lograron determinar el vencimiento. Si IAMC agrega
+# una serie nueva (ej: enero), aparece en los logs como serie sin mapear.
+SERIE_VTO_FALLBACK = {
+    "OC": "2026-10-16",
+    "O":  "2026-10-16",
+    "DI": "2026-12-18",
+    "D":  "2026-12-18",
+}
+
 # Símbolo BYMA: prefijo + C/V + strike (decimales opcionales) + serie opcional
 RE_OPCION = re.compile(r'^([A-Z0-9]+?)([CV])(\d{2,7}(?:\.\d+)?)\.?([A-Z]{1,2})?$')
 
-# Para detectar basura: cualquier fragmento que parezca símbolo de opción
+# Fragmento que parece símbolo de opción (para detectar basura multi-símbolo)
 RE_SYM_FRAGMENT = re.compile(r'[A-Z0-9]{2,8}[CV]\d')
 
 # Hora tipo 16:32:25 o 16:32 (ancla para recuperar líneas colapsadas)
 RE_HORA = re.compile(r'^\d{1,2}:\d{2}(:\d{2})?$')
+
+# ── NUEVO: detección robusta de vencimiento en texto ───────────────────────────
+MESES_NUM = {
+    'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6,
+    'julio': 7, 'agosto': 8, 'septiembre': 9, 'setiembre': 9, 'octubre': 10,
+    'noviembre': 11, 'diciembre': 12,
+}
+RE_MES       = re.compile(r'\b(' + '|'.join(MESES_NUM) + r')\b', re.IGNORECASE)
+RE_FECHA_DMY = re.compile(r'\b(\d{1,2})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{2,4})\b')
+RE_FECHA_TXT = re.compile(r'\b(\d{1,2})\s*[-\./]\s*([A-Za-z]{3,10})\s*[-\./]\s*(\d{2,4})\b')
+
+def _mes_num(nombre: str):
+    return MESES_NUM.get(nombre.lower()) or next(
+        (v for k, v in MESES_NUM.items() if k[:3] == nombre.lower()[:3]), None)
+
+def _parse_fecha_str(fecha_str: str):
+    """'11-sep-26' → date(2026, 9, 11). None si no se puede."""
+    if not fecha_str: return None
+    m = re.match(r'^(\d{1,2})[.\-/]([A-Za-z]{3})[.\-/](\d{2,4})$', fecha_str)
+    if not m: return None
+    mes = _mes_num(m.group(2))
+    if not mes: return None
+    try:
+        yy = int(m.group(3)); yy += 2000 if yy < 100 else 0
+        return date(yy, mes, int(m.group(1)))
+    except ValueError:
+        return None
+
+def _detect_vto(text: str, report_date=None):
+    """Detecta el vencimiento en el texto de una página. Devuelve ISO o None."""
+    lines = text.split('\n')
+    # 1) Fuerte: nombre de mes y fecha dd/mm/yyyy en la MISMA línea
+    for line in lines:
+        if not RE_MES.search(line): continue
+        m_f = RE_FECHA_DMY.search(line)
+        if m_f:
+            try:
+                yy = int(m_f.group(3)); yy += 2000 if yy < 100 else 0
+                return date(yy, int(m_f.group(2)), int(m_f.group(1))).isoformat()
+            except ValueError: pass
+    # 2) Medio: mes en una línea, fecha en la siguiente
+    for i, line in enumerate(lines):
+        if RE_MES.search(line) and i + 1 < len(lines):
+            m_f = RE_FECHA_DMY.search(lines[i + 1])
+            if m_f:
+                try:
+                    yy = int(m_f.group(3)); yy += 2000 if yy < 100 else 0
+                    return date(yy, int(m_f.group(2)), int(m_f.group(1))).isoformat()
+                except ValueError: pass
+    # 3) Fecha textual "16-oct-26" (descartando la fecha del informe)
+    for m in RE_FECHA_TXT.finditer(text):
+        mes = _mes_num(m.group(2))
+        if not mes: continue
+        try:
+            yy = int(m.group(3)); yy += 2000 if yy < 100 else 0
+            d = date(yy, mes, int(m.group(1)))
+        except ValueError: continue
+        if report_date and d <= report_date: continue   # es la fecha del informe
+        return d.isoformat()
+    # 4) Último recurso: fecha dd/mm cuyo nombre de mes aparece en el texto
+    tl = text.lower()
+    for m_f in RE_FECHA_DMY.finditer(text):
+        mm = int(m_f.group(2))
+        nombre = next((k for k, v in MESES_NUM.items() if v == mm), None)
+        if not nombre or nombre not in tl: continue
+        try:
+            yy = int(m_f.group(3)); yy += 2000 if yy < 100 else 0
+            d = date(yy, mm, int(m_f.group(1)))
+        except ValueError: continue
+        if report_date and d <= report_date: continue
+        return d.isoformat()
+    return None
 
 def parse_symbol(sym: str):
     """Divide el símbolo: GFGC4200OC → ('GFG','CALL',4200.0,'OC')."""
@@ -286,14 +368,13 @@ def _pi(v):
     f = _pf(v)
     return int(f) if f is not None else None
 
-def _recover_line_row(line: str, ctx: dict, learned_series: dict, unmapped: set):
+def _recover_line_row(line: str, ctx: dict, resolve_vto, unmapped: set):
     """
-    NUEVO: recupera filas que pdfplumber colapsó en una única celda, ej:
-      'TXAC700.DI 700 -4.71% OTM 669.5 60.0 60.0 60.0 60.0 16:32:25 60000.0 1 60.00 0.00 60.00 34.57% 39.80% 0.57 0.0029 -0.49 1.36 0.86'
+    Recupera filas que pdfplumber colapsó en una única celda, ej:
+      'TXAC700.DI 700 -4.71% OTM 669.5 60.0 ... 16:32:25 60000.0 1 60.00 ... 34.57% 39.80% 0.57 0.0029 -0.49 1.36 0.86'
       'YPFC9400DI 9400 -6.06% OTM 8830.0 0.0 0 30.62%'
-    Devuelve dict de fila o None si es basura inservible (página de rankings, etc.).
-    Estrategia: anclas conocidas — moneyness (ITM/OTM/ATM), hora (HH:MM:SS),
-    y cola de griegas (VH%, IV%, delta, gamma, theta, vega, rho).
+    Devuelve dict de fila o None si es basura inservible.
+    FIX: SIN ancla moneyness (ITM/OTM/ATM) → None (basura de rankings, etc.)
     """
     toks = line.split()
     if not toks: return None
@@ -311,13 +392,7 @@ def _recover_line_row(line: str, ctx: dict, learned_series: dict, unmapped: set)
         unmapped.add(pref)
         return None   # sin mapeo no asignamos subyacente (evita contaminación)
 
-    vto = ctx.get("vto")
-    if serie:
-        if vto:
-            learned_series.setdefault(serie, vto)
-            learned_series.setdefault(serie[:1], vto)
-        else:
-            vto = learned_series.get(serie) or learned_series.get(serie[:1])
+    vto = resolve_vto(serie, ctx.get("vto"))
 
     row = {"symbol": toks[0].upper(), "tipo": tipo, "subyacente": suby,
            "vencimiento": vto, "strike": strike,
@@ -327,7 +402,7 @@ def _recover_line_row(line: str, ctx: dict, learned_series: dict, unmapped: set)
     rest = toks[1:]
     mon_idx = next((i for i, t in enumerate(rest) if t in ('ITM', 'OTM', 'ATM')), None)
     if mon_idx is None:
-        return row  # sin ancla moneyness: solo identidad (strike/tipo/suby)
+        return None   # FIX: sin moneyness no es una fila de cadena → basura
     if mon_idx > 0 and rest[mon_idx-1].endswith('%'):
         row["distancia_itm_otm"] = rest[mon_idx-1]
     row["moneyness"] = rest[mon_idx]
@@ -367,7 +442,6 @@ def _recover_line_row(line: str, ctx: dict, learned_series: dict, unmapped: set)
     if hora_idx is not None:
         left, middle = after[:hora_idx], after[hora_idx + 1:]
         row["hora_ultimo"] = after[hora_idx]
-        # izquierda: apertura, min, max, ultimo (+ var% al final si está)
         vals, varpct = [], None
         for t in left:
             if t.endswith('%'):
@@ -378,7 +452,6 @@ def _recover_line_row(line: str, ctx: dict, learned_series: dict, unmapped: set)
         for field, v in zip(("apertura_prima", "min_prima", "max_prima", "ultimo_precio"), vals):
             row[field] = v
         if varpct is not None: row["var_prima_pct"] = varpct
-        # middle: volumen, ops, oi, var_oi, teórico, desvío, valor temporal
         mvals = [_pf(t) for t in middle if _pf(t) is not None]
         for field, v in zip(("volumen_ars", "cant_ops", "open_interest", "var_oi_pct",
                              "precio_teorico", "desvio_teorico", "valor_temporal"), mvals):
@@ -398,7 +471,7 @@ def _recover_line_row(line: str, ctx: dict, learned_series: dict, unmapped: set)
         for field, v in zip(("apertura_prima", "min_prima", "max_prima", "ultimo_precio"), vals):
             row[field] = v
         if len(pcts) == 1:
-            row["vol_hist_40r"] = pcts[0]      # sin trades no hay IV, sí VH
+            row["vol_hist_40r"] = pcts[0]
         elif len(pcts) >= 2:
             row["vol_hist_40r"]  = pcts[-2]
             row["vol_implicita"] = pcts[-1]
@@ -408,10 +481,10 @@ def _recover_line_row(line: str, ctx: dict, learned_series: dict, unmapped: set)
 def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
     """
     Parsea el PDF de IAMC.
-    - El subyacente se resuelve desde el SÍMBOLO (OPCION_MAP), no del encabezado.
-    - NUEVO: filas colapsadas en una celda se recuperan con _recover_line_row.
-    - NUEVO: la página de rankings (basura multi-símbolo) se descarta.
-    La tabla tiene 78 columnas, cada campo ocupa 3 celdas (valor, vacío, vacío).
+    - Subyacente/tipo/strike desde el SÍMBOLO (OPCION_MAP).
+    - Vencimiento: texto de página → aprendido por serie → fallback estático OC/DI.
+    - Filas colapsadas se recuperan; basura de rankings se descarta.
+    - Dedupe por símbolo conservando la fila más completa.
     """
     if not HAS_PDF: return [], {}, None
     rows = []
@@ -450,9 +523,33 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
     INT_FIELDS  = {"cant_ops", "open_interest"}
 
     mixed, unmapped = [], set()
-    learned_series = {}
+    learned_series = {}                        # serie → vto (derivado del texto)
+    used_static_series = set()                 # series resueltas con fallback estático
+    vto_sources = Counter()                    # diagnóstico: de dónde salió cada vto
     garbage_skipped = 0
     recovered_count = 0
+
+    report_date = None   # se setea tras leer la fecha de página 1
+
+    def resolve_vto(serie, current_vto):
+        """Prioridad: texto aprendido por serie > fallback estático > contexto de página."""
+        if serie:
+            if serie in learned_series:
+                vto_sources["serie_aprendida"] += 1
+                return learned_series[serie]
+            if serie[:1] in learned_series:
+                vto_sources["serie_aprendida"] += 1
+                return learned_series[serie[:1]]
+            if serie in SERIE_VTO_FALLBACK:
+                used_static_series.add(serie)
+                vto_sources["serie_estatica"] += 1
+                return SERIE_VTO_FALLBACK[serie]
+            if serie[:1] in SERIE_VTO_FALLBACK:
+                used_static_series.add(serie[:1])
+                vto_sources["serie_estatica"] += 1
+                return SERIE_VTO_FALLBACK[serie[:1]]
+        vto_sources["contexto_pagina" if current_vto else "none"] += 1
+        return current_vto
 
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
@@ -460,6 +557,7 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
             m_fecha = re.search(r'(\d{1,2})[.\-/]([A-Za-z]{3})[.\-/](\d{2,4})', first_text)
             if m_fecha:
                 fecha_str = f"{m_fecha.group(1)}-{m_fecha.group(2)}-{m_fecha.group(3)}"
+                report_date = _parse_fecha_str(fecha_str)
 
             current_suby, current_tipo, current_vto = None, None, None
             current_tasa, current_dias = None, None
@@ -467,23 +565,24 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
             for page in pdf.pages:
                 text = page.extract_text() or ""
 
-                m_tasa = re.search(r'Tasa Libre Riesgo[^\d]*([\d.]+)%', text)
-                if m_tasa: current_tasa = float(m_tasa.group(1))
+                # FIX: "Tasa Libre de Riesgo" — la regex vieja exigía "Tasa Libre Riesgo"
+                m_tasa = re.search(
+                    r'tasa\s+libre(?:\s+de)?\s+riesgo[^\d%]*([\d.,]+)\s*%',
+                    text, re.IGNORECASE)
+                if m_tasa:
+                    try: current_tasa = float(m_tasa.group(1).replace(',', '.'))
+                    except ValueError: pass
 
-                m_dias = re.search(r'Días al Vencimiento[^\d]*(\d+)', text)
+                # FIX: IGNORECASE + "al" opcional
+                m_dias = re.search(
+                    r'd[ií]as\s+(?:al\s+)?vencimiento[^\d%]*?(\d+)',
+                    text, re.IGNORECASE)
                 if m_dias: current_dias = int(m_dias.group(1))
 
-                # Vencimiento: cualquier "Mes DD/MM/YYYY" en el texto
-                m_vto = re.search(
-                    r'(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|'
-                    r'Octubre|Noviembre|Diciembre)\s+\.?\s*(\d{1,2})/(\d{1,2})/(\d{2,4})', text)
-                if m_vto:
-                    try:
-                        yy = int(m_vto.group(4))
-                        yy += 2000 if yy < 100 else 0
-                        current_vto = date(yy, int(m_vto.group(3)), int(m_vto.group(2))).isoformat()
-                    except ValueError:
-                        pass
+                # Vencimiento desde el texto (detección robusta multi-formato)
+                detected = _detect_vto(text, report_date)
+                if detected:
+                    current_vto = detected
 
                 if 'OPCIONES DE COMPRA (CALL)' in text:
                     current_tipo = 'CALL'
@@ -491,7 +590,7 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                     current_tipo = 'PUT'
 
                 # Encabezado de subyacente: solo fallback
-                for line in text.split('\n'):
+                for line in lines_tmp if False else text.split('\n'):
                     m_s = re.match(r'^(.+?)\s*\(([A-Z0-9]{2,6})\)\s*$', line.strip())
                     if m_s and len(m_s.group(2)) <= 6:
                         current_suby = m_s.group(2)
@@ -505,12 +604,11 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                         r_parsed = None
 
                         if re.search(r'\s', sym_raw):
-                            # ── NUEVO: celda colapsada (línea entera en row[0]) ──
-                            ctx = {"suby": current_suby, "tipo": current_tipo,
-                                   "vto": current_vto, "tasa": current_tasa, "dias": current_dias}
-                            r_parsed = _recover_line_row(sym_raw, ctx, learned_series, unmapped)
+                            # ── Celda colapsada (línea entera en row[0]) ──
+                            ctx = {"vto": current_vto, "tasa": current_tasa, "dias": current_dias}
+                            r_parsed = _recover_line_row(sym_raw, ctx, resolve_vto, unmapped)
                             if r_parsed is None:
-                                garbage_skipped += 1   # ranking page u otra basura
+                                garbage_skipped += 1
                                 continue
                             recovered_count += 1
                         else:
@@ -534,12 +632,15 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                             tipo = tipo_sym or current_tipo
                             strike = strike_sym if strike_sym else (_pf(row[3]) if len(row) > 3 else None)
 
-                            vto = current_vto
-                            if serie and current_vto:
-                                learned_series.setdefault(serie, current_vto)
-                                learned_series.setdefault(serie[:1], current_vto)
-                            if not vto and serie:
-                                vto = learned_series.get(serie) or learned_series.get(serie[:1])
+                            # Aprender serie→vto cuando el texto de la página lo dio
+                            vto = None
+                            if serie:
+                                if current_vto:
+                                    learned_series.setdefault(serie, current_vto)
+                                    learned_series.setdefault(serie[:1], current_vto)
+                                vto = resolve_vto(serie, current_vto)
+                            else:
+                                vto = current_vto
 
                             r_parsed = {"symbol": sym, "tipo": tipo, "subyacente": suby,
                                         "vencimiento": vto, "strike": strike,
@@ -582,6 +683,23 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
         print(f"PDF parse error: {e}")
         import traceback; traceback.print_exc()
 
+    # ── NUEVO: dedupe por símbolo — conservar la fila más completa ──
+    # (la página de rankings puede generar filas fantasma que duplican
+    #  símbolos reales de la cadena; nos quedamos con la que tiene más datos)
+    by_sym, order, dup_count = {}, [], 0
+    for r in rows:
+        s = r.get("symbol")
+        if not s: continue
+        if s not in by_sym:
+            by_sym[s] = r
+            order.append(s)
+        else:
+            dup_count += 1
+            cur = by_sym[s]
+            if sum(v is not None for v in r.values()) > sum(v is not None for v in cur.values()):
+                by_sym[s] = r
+    rows = [by_sym[s] for s in order]
+
     # ── Moneyness recalculada con el spot dominante real por subyacente ──
     spots_raw = {}
     for r in rows:
@@ -604,6 +722,12 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
         print(f"[parser] {recovered_count} filas recuperadas desde línea colapsada")
     if garbage_skipped:
         print(f"[parser] {garbage_skipped} filas de basura descartadas (rankings/otras)")
+    if dup_count:
+        print(f"[parser] {dup_count} filas duplicadas fusionadas (rankings vs cadena)")
+    print(f"[parser] Fuentes de vencimiento: {dict(vto_sources)}")
+    if used_static_series:
+        print(f"[parser] Series resueltas con fallback estático: {sorted(used_static_series)} — "
+              f"actualizar SERIE_VTO_FALLBACK cuando cambien los vencimientos")
     if unmapped:
         print(f"[parser] ⚠ Prefijos sin mapear: {sorted(unmapped)[:20]} — "
               f"completar OPCION_MAP. Ver /admin/debug-symbols")
@@ -627,6 +751,19 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
         },
     }
     return rows, resumen, fecha_str
+
+def _stats_rows(rows: list) -> dict:
+    """NUEVO: contadores de completitud para validar el parseo en un vistazo."""
+    def nn(f): return sum(1 for r in rows if r.get(f) is not None)
+    return {
+        "total": len(rows),
+        "con_precio_suby": nn("precio_suby"),
+        "con_ultimo": nn("ultimo_precio"),
+        "con_vencimiento": nn("vencimiento"),
+        "con_oi": nn("open_interest"),
+        "con_iv": nn("vol_implicita"),
+        "con_tasa": nn("tasa_libre"),
+    }
 
 IAMC_DIARIO_URL = "https://www.iamc.com.ar/informediario/"
 
@@ -772,7 +909,7 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
             # ── Guardar y procesar ────────────────────────────────────────────
             print(f"Procesando PDF de {target_date}: {len(pdf_bytes)} bytes")
             rows, resumen, fecha_str = parse_iamc_pdf(pdf_bytes)
-            print(f"Parseado: {len(rows)} opciones")
+            print(f"Parseado: {len(rows)} opciones — stats: {_stats_rows(rows)}")
             _pg_save_pdf(pdf_bytes, target_date.isoformat())
             if rows:
                 _pg_save_opciones(rows, target_date.isoformat())
@@ -808,7 +945,7 @@ async def scheduler():
         state["fecha"]       = fecha
         state["updated_at"]  = datetime.now(TZ_ARG).isoformat()
         state["descarga_ok"] = True
-        print(f"Cargado desde PG: {len(rows)} opciones, fecha {fecha}")
+        print(f"Cargado desde PG: {len(rows)} opciones, fecha {fecha} — stats: {_stats_rows(rows)}")
     else:
         await descargar_iamc_pdf()
 
@@ -1007,7 +1144,7 @@ async def admin_reparse():
         return {"ok": False, "error": "No hay PDF en PostgreSQL"}
     print(f"Reparsando PDF de {fecha} ({len(pdf_bytes)} bytes)...")
     rows, resumen, fecha_str = parse_iamc_pdf(pdf_bytes)
-    print(f"Reparsado: {len(rows)} opciones")
+    print(f"Reparsado: {len(rows)} opciones — stats: {_stats_rows(rows)}")
     if rows:
         _pg_save_opciones(rows, fecha)
     state["opciones"]    = rows
@@ -1016,11 +1153,14 @@ async def admin_reparse():
     state["updated_at"]  = datetime.now(TZ_ARG).isoformat()
     state["descarga_ok"] = True
     state["error"]       = None
+    # NUEVO: muestra con datos reales (no filas fantasma) + stats de completitud
+    ggal = [r for r in rows if r.get("subyacente") == "GGAL"]
+    ggal_con_datos = [r for r in ggal if r.get("ultimo_precio") is not None][:3]
     return {
         "ok": True,
         "fecha": fecha,
-        "total_opciones": len(rows),
-        "muestra_ggal": [r for r in rows if r.get("subyacente") == "GGAL"][:3],
+        "stats": _stats_rows(rows),
+        "muestra_ggal_con_datos": ggal_con_datos or ggal[:3],
     }
 
 @app.get("/admin/refresh")
@@ -1064,7 +1204,7 @@ async def admin_upload_pdf(pdf: UploadFile = File(...)):
     return {
         "ok": True,
         "fecha": fecha,
-        "total_opciones": len(rows),
+        "stats": _stats_rows(rows),
         "subyacentes": len(set(r["subyacente"] for r in rows if r.get("subyacente"))),
     }
 
