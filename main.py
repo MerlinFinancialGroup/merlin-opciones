@@ -1465,14 +1465,16 @@ async def _veta_ws_loop():
                 _veta_session["id"] = session_id
                 _veta_session["conn_id"] = conn_id
 
-                # Suscribir a todos los subyacentes activos
-                opciones_activas = [r["symbol"] for r in state["opciones"]
-                                    if r.get("symbol") and (r.get("volumen_ars") or 0) > 0]
-                if opciones_activas:
-                    topics = [f"book.{_symbol_to_security_id(s)}" for s in opciones_activas[:50]]
-                    msg = json.dumps({"_req": "S", "topicType": "book", "topics": topics, "replace": False})
+                # Suscribir a todas las opciones (con o sin operaciones)
+                todas = [r["symbol"] for r in state["opciones"] if r.get("symbol")]
+                # Enviar en lotes de 50 para no saturar el WS
+                for i in range(0, len(todas), 50):
+                    lote = todas[i:i+50]
+                    topics = [f"md.{_symbol_to_security_id(s)}" for s in lote]
+                    msg = json.dumps({"_req": "S", "topicType": "md", "topics": topics, "replace": False})
                     await ws.send(msg)
-                    print(f"[Veta WS] Suscrito a {len(topics)} books")
+                    await asyncio.sleep(0.1)
+                print(f"[Veta WS] Suscrito a {len(todas)} opciones (md)")
 
                 async for message in ws:
                     if isinstance(message, bytes): message = message.decode()
@@ -1485,6 +1487,11 @@ async def _veta_ws_loop():
                         if sec_id and md:
                             if sec_id not in _veta_books: _veta_books[sec_id] = {}
                             _veta_books[sec_id].update(md)
+                            # También guardar sin prefijo md. por compatibilidad
+                            clean_id = sec_id.replace('md.', '')
+                            if clean_id != sec_id:
+                                if clean_id not in _veta_books: _veta_books[clean_id] = {}
+                                _veta_books[clean_id].update(md)
 
         except Exception as e:
             print(f"[Veta WS] Error: {e}. Reconectando en 10s...")
