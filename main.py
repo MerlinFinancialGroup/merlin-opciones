@@ -600,9 +600,9 @@ async def get_cadena(
     if not rows and fecha:
         rows = _pg_load_opciones(fecha)
     if subyacente:
-        rows = [r for r in rows if r.get("subyacente","").upper() == subyacente.upper()]
+        rows = [r for r in rows if (r.get("subyacente") or "").upper() == subyacente.upper()]
     if tipo:
-        rows = [r for r in rows if r.get("tipo","").upper() == tipo.upper()]
+        rows = [r for r in rows if (r.get("tipo") or "").upper() == tipo.upper()]
     if vencimiento:
         rows = [r for r in rows if r.get("vencimiento") == vencimiento]
     return {"fecha": state["fecha"], "total": len(rows), "data": rows}
@@ -687,8 +687,32 @@ async def get_iv_surface(subyacente: str):
     return {"subyacente": subyacente, "fecha": state["fecha"], "data": surface}
 
 # ── Admin endpoints ────────────────────────────────────────────────────────────
-@app.get("/admin/refresh")
-@app.post("/admin/refresh")
+@app.get("/admin/reparse")
+@app.post("/admin/reparse")
+async def admin_reparse():
+    """Reparsea el PDF que ya está en PostgreSQL con el parser actual."""
+    pdf_bytes, fecha = _pg_load_latest()
+    if not pdf_bytes:
+        return {"ok": False, "error": "No hay PDF en PostgreSQL"}
+    print(f"Reparsando PDF de {fecha} ({len(pdf_bytes)} bytes)...")
+    rows, resumen, fecha_str = parse_iamc_pdf(pdf_bytes)
+    print(f"Reparsado: {len(rows)} opciones")
+    if rows:
+        _pg_save_opciones(rows, fecha)
+    state["opciones"]    = rows
+    state["resumen"]     = resumen
+    state["fecha"]       = fecha
+    state["updated_at"]  = datetime.now(TZ_ARG).isoformat()
+    state["descarga_ok"] = True
+    state["error"]       = None
+    return {
+        "ok": True,
+        "fecha": fecha,
+        "total_opciones": len(rows),
+        "muestra_ggal": [r for r in rows if r.get("subyacente") == "GGAL"][:3],
+    }
+
+
 async def admin_refresh(fecha_str: str = Query(None)):
     """Fuerza descarga del PDF de IAMC."""
     target = None
