@@ -680,6 +680,8 @@ function renderCadena() {
       <th class="center">Tipo</th>
       <th>Strike</th>
       <th class="center">Moneyness</th>
+      <th>Bid</th>
+      <th>Ask</th>
       <th>Último</th>
       <th>Apertura</th>
       <th>Mín</th>
@@ -691,7 +693,9 @@ function renderCadena() {
       <th>Var OI%</th>
       <th>P.Teórico</th>
       <th>Desvío</th>
-      <th>IV%</th>
+      <th title="VI del bid">VI Bid</th>
+      <th title="VI del offer">VI Off</th>
+      <th title="VI del último operado">VI Últ</th>
       <th title="Volatilidad histórica 40 ruedas">VH%</th>
       <th title="Delta">Δ</th>
       <th title="Gamma">Γ</th>
@@ -717,6 +721,8 @@ function renderCadena() {
       <td class="center ${tipoCls}">${esc(r.tipo)||'—'}</td>
       <td class="gold">$${fmt(r.strike)}</td>
       <td class="center"><span class="${mBadge}">${esc(r.moneyness)||'—'}</span></td>
+      <td class="pos">${r.bid!=null?'$'+fmt(r.bid):'-'}</td>
+      <td class="neg">${r.ask!=null?'$'+fmt(r.ask):'-'}</td>
       <td>${r.ultimo_precio!=null?'$'+fmt(r.ultimo_precio):'-'}</td>
       <td class="muted">${r.apertura_prima!=null?'$'+fmt(r.apertura_prima):'-'}</td>
       <td class="muted">${r.min_prima!=null?'$'+fmt(r.min_prima):'-'}</td>
@@ -728,6 +734,8 @@ function renderCadena() {
       <td class="${varOiCls}">${r.var_oi_pct!=null?(r.var_oi_pct>0?'+':'')+r.var_oi_pct.toFixed(2)+'%':'-'}</td>
       <td>${r.precio_teorico!=null?'$'+fmt(r.precio_teorico):'-'}</td>
       <td class="${desvCls}">${r.desvio_teorico!=null?(r.desvio_teorico>0?'+':'')+fmt(r.desvio_teorico):'-'}</td>
+      <td class="pos">${r.vi_bid!=null?r.vi_bid.toFixed(2)+'%':'-'}</td>
+      <td class="neg">${r.vi_offer!=null?r.vi_offer.toFixed(2)+'%':'-'}</td>
       <td class="gold">${r.vol_implicita!=null?r.vol_implicita.toFixed(2)+'%':'-'}</td>
       <td class="muted">${r.vol_hist_40r!=null?r.vol_hist_40r.toFixed(2)+'%':'-'}</td>
       <td>${r.delta!=null?r.delta.toFixed(2):'-'}</td>
@@ -803,8 +811,8 @@ function renderResumen() {
 function exportCsv() {
   const rows = getFilteredRows();
   if (!rows.length) return;
-  const cols = ['symbol','tipo','strike','moneyness','ultimo_precio','apertura_prima','min_prima','max_prima','var_prima_pct','volumen_ars','cant_ops','open_interest','var_oi_pct','precio_teorico','desvio_teorico','vol_implicita','vol_hist_40r','delta','gamma','theta','vega','rho','vencimiento','dias_vto'];
-  const head = ['Symbol','Tipo','Strike','Moneyness','Ultimo','Apertura','Min','Max','Var%','Vol ARS','Ops','OI','Var OI%','P.Teorico','Desvio','IV%','VH%','Delta','Gamma','Theta','Vega','Rho','Vencimiento','Dias Vto'];
+  const cols = ['symbol','tipo','strike','moneyness','bid','ask','ultimo_precio','apertura_prima','min_prima','max_prima','var_prima_pct','volumen_ars','cant_ops','open_interest','var_oi_pct','precio_teorico','desvio_teorico','vi_bid','vi_offer','vol_implicita','vol_hist_40r','delta','gamma','theta','vega','rho','vencimiento','dias_vto'];
+  const head = ['Symbol','Tipo','Strike','Moneyness','Bid','Ask','Ultimo','Apertura','Min','Max','Var%','Vol ARS','Ops','OI','Var OI%','P.Teorico','Desvio','VI Bid','VI Offer','VI Ult','VH%','Delta','Gamma','Theta','Vega','Rho','Vencimiento','Dias Vto'];
   const cell = v => {
     if (v == null) return '';
     const s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
