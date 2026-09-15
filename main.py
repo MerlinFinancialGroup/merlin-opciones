@@ -834,7 +834,40 @@ async def debug_parser():
         "filas_muestra": resultado,
     }
 
-@app.get("/admin/debug-iamc-html")
+@app.get("/admin/debug-page/{page_num}")
+async def debug_page(page_num: int):
+    """Muestra el texto y tablas crudas de una página específica del PDF."""
+    if not HAS_PDF:
+        return {"error": "pdfplumber no disponible"}
+    pdf_bytes, fecha = _pg_load_latest()
+    if not pdf_bytes:
+        return {"error": "No hay PDF cargado"}
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            if page_num >= len(pdf.pages):
+                return {"error": f"Página {page_num} no existe (total: {len(pdf.pages)})"}
+            page = pdf.pages[page_num]
+            text = page.extract_text() or ""
+            tables = page.extract_tables()
+            return {
+                "pagina": page_num,
+                "texto_completo": text,
+                "num_tablas": len(tables),
+                "tablas": [
+                    {
+                        "tabla_idx": t_idx,
+                        "num_filas": len(table),
+                        "num_cols": len(table[0]) if table else 0,
+                        "filas": table[:15],
+                    }
+                    for t_idx, table in enumerate(tables[:3])
+                ],
+            }
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
+
 async def debug_iamc_html():
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as client:
