@@ -365,7 +365,7 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
         if d.weekday() >= 5: continue  # saltar finde
         url = _iamc_url(d)
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as client:
                 print(f"Intentando bajar PDF IAMC: {url}")
                 r = await client.get(url, headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -634,7 +634,7 @@ async def test_iamc_url(fecha_str: str = Query(None)):
         if test_date.weekday() >= 5: continue
         url = _iamc_url(test_date)
         try:
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True, verify=False) as client:
                 r = await client.head(url, headers={"User-Agent": "Mozilla/5.0"})
                 results.append({
                     "fecha": test_date.isoformat(),
