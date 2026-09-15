@@ -420,15 +420,17 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
                     key=lambda x: x[0], reverse=True
                 )
 
-            # Probar cada link hasta encontrar uno con PDF válido
+            # Probar cada link hasta encontrar uno con PDF válido (máx 7)
             informe_url = None
             html2 = None
             pdf_url = None
             pdf_bytes = None
+            intentos = 0
 
-            for link_date, link in links_con_fecha:
+            for link_date, link in links_con_fecha[:7]:
+                intentos += 1
                 candidate = f"https://www.iamc.com.ar{link}"
-                print(f"  Probando {link_date}: {candidate}")
+                print(f"  Intento {intentos}/7 — {link_date}: {candidate}")
                 r_test = await client.get(candidate, headers={**headers_browser, "Referer": IAMC_DIARIO_URL})
                 if r_test.status_code != 200:
                     print(f"  Falla status={r_test.status_code}, siguiente...")
@@ -486,7 +488,9 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
                     print(f"  PDF corrupto o inválido (size={len(content)}, header={content[:8]}), siguiente...")
 
             if not informe_url or not pdf_bytes:
-                state["error"] = "No se encontró ningún PDF válido en los informes disponibles"
+                msg = f"No se encontró ningún PDF válido tras {intentos} intentos"
+                print(f"  {msg}")
+                state["error"] = msg
                 state["descarga_ok"] = False
                 return False
 
@@ -784,8 +788,39 @@ async def get_disponibles():
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/admin/debug-parser")
+async def debug_parser():
+    """Muestra filas crudas extraídas por pdfplumber para debug del parser."""
+    if not HAS_PDF:
+        return {"error": "pdfplumber no disponible"}
+    pdf_bytes, fecha = _pg_load_latest()
+    if not pdf_bytes:
+        return {"error": "No hay PDF cargado"}
+    resultado = []
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for i, page in enumerate(pdf.pages[:15]):
+                text = page.extract_text() or ""
+                if "GGAL" not in text and "GALICIA" not in text:
+                    continue
+                tables = page.extract_tables()
+                for t_idx, table in enumerate(tables):
+                    for r_idx, row in enumerate(table[:6]):
+                        if not row or not row[0]: continue
+                        if not re.match(r'^[A-Z]{2,6}[CV]?\d', str(row[0]).strip()):
+                            continue
+                        resultado.append({
+                            "pagina": i, "tabla": t_idx, "fila": r_idx,
+                            "raw": row, "len": len(row),
+                        })
+                        if len(resultado) >= 6: break
+                if len(resultado) >= 6: break
+    except Exception as e:
+        return {"error": str(e)}
+    return {"fecha": fecha, "filas_muestra": resultado}
+
+@app.get("/admin/debug-iamc-html")
 async def debug_iamc_html():
-    """Inspecciona el HTML de /informediario/ y la página del informe."""
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as client:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
