@@ -263,6 +263,7 @@ async function loadData() {
     }
   } catch(e) {
     document.getElementById('live-pill').textContent = '● error';
+    document.getElementById('sidebar').innerHTML = `<div style="padding:14px;color:#c0392b;font-family:'JetBrains Mono',monospace;font-size:10px">Error: ${e.message}</div>`;
     console.error(e);
   }
 }
