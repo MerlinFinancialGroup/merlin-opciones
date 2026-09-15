@@ -81,11 +81,13 @@ tbody tr:hover{background:#1a1710}
 tbody tr.atm{background:rgba(201,150,10,.04)}
 tbody tr.atm:hover{background:rgba(201,150,10,.08)}
 td{padding:5px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#c8c0b0;white-space:nowrap}
-/* Columna Symbol sticky: fondos opacos que imitan el fondo de la fila */
 tbody td:first-child{position:sticky;left:0;background:#0e0d0a;z-index:4;text-align:left;color:#e8e0cc;font-weight:500}
 tbody tr.atm td:first-child{background:#131109}
 tbody tr:hover td:first-child{background:#1a1710}
 tbody tr.atm:hover td:first-child{background:#181507}
+/* FIX: el symbol no puede empujar el ancho de la columna (antes deformaba toda la tabla) */
+.sym{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sym.raw{color:#a09880;font-style:italic}
 td.center{text-align:center}
 td.muted{color:#706858}
 .badge-itm{background:rgba(58,176,122,.1);color:#3ab07a;border:0.5px solid #2d6a3e;padding:1px 5px;border-radius:3px;font-size:9px}
@@ -108,7 +110,7 @@ td.muted{color:#706858}
 .empty p{font-size:13px;line-height:1.6;max-width:280px}
 .loading{display:flex;align-items:center;justify-content:center;height:100%;font-family:'JetBrains Mono',monospace;font-size:11px;color:#706858}
 
-/* ── Colores genéricos (antes scopeados a td — van al final para ganar a .res-val) ── */
+/* ── Colores genéricos ── */
 .pos{color:#3ab07a}
 .neg{color:#c0392b}
 .gold{color:#C9960A;font-weight:600}
@@ -202,14 +204,20 @@ const API = 'https://web-production-2a938.up.railway.app';
 const SUPABASE_URL  = 'https://zqnxkgqalhhybcnzgjfk.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpxbnhrZ3FhbGhoeWJjbnpnamZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg5Mzk3MDEsImV4cCI6MjA5NDUxNTcwMX0.GD0RHfLGzplLhL1E-_GUHh3HXSNsZsvFi436wcm2tD4';
 
-const ATM_TOL = 0.01; // tolerancia ATM unificada (±1% del spot)
+const ATM_TOL  = 0.01;   // ±1% del spot = ATM
+const PC_CAP   = 50;     // P/C por encima de esto se muestra como ">50"
+const IV_MIN   = 0.5;    // IV por debajo de esto = basura del solver → null
+const IV_MAX   = 500;    // IV por encima de esto = basura → null
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+// Prefijos de subyacentes conocidos (para parsear tipo/strike desde el ticker).
+// Importante: SUPV termina en "V" — sin esta lista, el parser genérico lo confunde con un PUT.
+const KNOWN_PREFIXES = ['GGAL','YPFD','BBAR','TXAR','METR','CRES','SUPV','BYMA','TGSU2','EDN','VIST'];
 
 // ── HELPERS ────────────────────────────────────────────────────────────────────
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-// Polyfill liviano para AbortSignal.timeout (Safari < 16.4)
 if (typeof AbortSignal !== 'undefined' && !AbortSignal.timeout) {
   AbortSignal.timeout = ms => {
     const c = new AbortController();
@@ -218,7 +226,6 @@ if (typeof AbortSignal !== 'undefined' && !AbortSignal.timeout) {
   };
 }
 
-// fetch + chequeo HTTP + timeout
 function fjson(url, opts = {}) {
   return fetch(url, { ...opts, signal: opts.signal ?? AbortSignal.timeout(15000) })
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
@@ -235,7 +242,7 @@ function showEmpty(msg) {
   const div = document.createElement('div');
   div.className = 'empty';
   const p = document.createElement('p');
-  p.textContent = msg; // textContent = sin inyección
+  p.textContent = msg;
   div.appendChild(p);
   el.appendChild(div);
 }
@@ -247,11 +254,12 @@ let state = {
   resumen: {},
   currentSuby: null,
   view: 'cadena',
+  dropped: 0,
 };
-let cadenaAbort = null;      // FIX: cancela requests obsoletos al cambiar de subyacente
-let lastCadenaJson = null;   // FIX: evita re-render si los datos no cambiaron
+let cadenaAbort = null;
+let lastCadenaJson = null;
 
-// ── AUTH (se integra más adelante desde el portal) ────────────────────────────
+// ── AUTH (pendiente de integración con el portal) ─────────────────────────────
 async function validarToken(token) {
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/validate_session`, {
@@ -271,9 +279,101 @@ async function validarToken(token) {
   }
 }
 
+// ── SANITIZACIÓN (defensas contra el feed IAMC) ────────────────────────────────
+// Extrae tipo y strike desde el ticker. Convención BYMA: SUBY + C/V + strike + (OC|DI)
+// Ej: YPFC9400DI → CALL 9400 · TXAV580.DI → PUT 580 · GFVC4200OC → PUT 4200
+function parseTicker(sym) {
+  const token = String(sym || '').trim().split(/\s+/)[0].toUpperCase();
+  if (!token) return { symbol: '', tipo: null, strike: null };
+
+  // 1) Si el token arranca con un subyacente conocido, lo que sigue es marcador+strike.
+  //    (evita que "SUPVC4700OC" se interprete como PUT por la V de SUPV)
+  const known = [...new Set([...KNOWN_PREFIXES, ...state.subyacentes.map(s => s.subyacente)])]
+    .filter(t => token.startsWith(t))
+    .sort((a,b) => b.length - a.length)[0];
+
+  const rest = known ? token.slice(known.length) : token;
+  let m = rest.match(/^\.?([CV])(\d{2,7}(?:\.\d+)?)\.?(?:OC|DI)?$/);
+  if (m) return { symbol: token, tipo: m[1] === 'C' ? 'CALL' : 'PUT', strike: parseFloat(m[2]) };
+
+  // 2) Fallback genérico: primer C/V seguido del strike al final del token
+  m = token.match(/^(.+?)([CV])(\d{2,7}(?:\.\d+)?)\.?(?:OC|DI)?$/);
+  if (m) return { symbol: token, tipo: m[2] === 'C' ? 'CALL' : 'PUT', strike: parseFloat(m[3]) };
+
+  return { symbol: token, tipo: null, strike: null };
+}
+
+// Moneyness calculada localmente — el backend marca TODOS los puts como OTM
+function moneynessOf(strike, spot, tipo) {
+  if (!(strike > 0) || !(spot > 0) || (tipo !== 'CALL' && tipo !== 'PUT')) return null;
+  const diff = (strike - spot) / spot;
+  if (Math.abs(diff) < ATM_TOL) return 'ATM';
+  if (tipo === 'CALL') return diff < 0 ? 'ITM' : 'OTM';
+  return diff > 0 ? 'ITM' : 'OTM'; // PUT: strike > spot = ITM
+}
+
+const PRICE_FIELDS = ['ultimo_precio','apertura_prima','min_prima','max_prima','precio_teorico'];
+
+function sanitizeCadena(rawRows) {
+  const spot = rawRows.find(r => r.precio_suby > 0)?.precio_suby || 0;
+  const out = [];
+  const droppedSyms = [];
+  let rawCount = 0;
+
+  for (let r of rawRows) {
+    // 1) El backend metió la línea cruda del feed en symbol → recuperar ticker/strike/tipo
+    if (/\s/.test(String(r.symbol || '').trim())) {
+      const info = parseTicker(r.symbol);
+      r = {
+        ...r,
+        symbol: info.symbol,
+        symbol_raw: String(r.symbol).trim(),
+        tipo: (r.tipo === 'CALL' || r.tipo === 'PUT') ? r.tipo : info.tipo,
+        strike: (r.strike > 0) ? r.strike : info.strike,
+        _raw: true,
+      };
+      rawCount++;
+    }
+    // 2) Tipo ausente → deducir del ticker
+    if (r.tipo !== 'CALL' && r.tipo !== 'PUT') {
+      const info = parseTicker(r.symbol);
+      if (!info.tipo) { droppedSyms.push(r.symbol); continue; }
+      r = { ...r, tipo: info.tipo };
+    }
+    // 3) Strike ausente o inválido → deducir del ticker; sin strike la fila no sirve
+    if (!(r.strike > 0)) {
+      const info = parseTicker(r.symbol);
+      if (!info.strike) { droppedSyms.push(r.symbol); continue; }
+      r = { ...r, strike: info.strike };
+    }
+    // 4) Precios negativos → no existen primas negativas
+    const patch = {};
+    for (const f of PRICE_FIELDS) {
+      if (r[f] != null && r[f] < 0) patch[f] = null;
+    }
+    // 5) Teórico $0 = solver roto → teórico y desvío no son confiables
+    if (!(r.precio_teorico > 0)) { patch.precio_teorico = null; patch.desvio_teorico = null; }
+    // 6) IV imposible (0.96%, etc.) = solver roto
+    if (r.vol_implicita != null && (r.vol_implicita < IV_MIN || r.vol_implicita > IV_MAX)) {
+      patch.vol_implicita = null;
+    }
+    if (Object.keys(patch).length) r = { ...r, ...patch };
+    // 7) Moneyness recalculada siempre que se pueda
+    const mn = moneynessOf(r.strike, spot, r.tipo);
+    if (mn) r.moneyness = mn;
+
+    out.push(r);
+  }
+
+  if (droppedSyms.length) console.warn(`[sanitize] ${droppedSyms.length} filas descartadas (sin strike/tipo recuperable):`, droppedSyms.slice(0,5));
+  if (rawCount) console.warn(`[sanitize] ${rawCount} filas reconstruidas desde línea cruda del feed`);
+
+  return { rows: out, dropped: droppedSyms.length };
+}
+
 // ── DATA ───────────────────────────────────────────────────────────────────────
 async function loadData() {
-  if (document.hidden) return; // pausa polling con pestaña en background
+  if (document.hidden) return;
 
   try {
     const [subRes, resRes] = await Promise.allSettled([
@@ -286,7 +386,7 @@ async function loadData() {
     if (subRes.status === 'rejected' && resRes.status === 'rejected') throw new Error('Sin respuesta del servidor');
 
     const fecha = (subRes.status==='fulfilled' && subRes.value.fecha) || state.resumen.fecha || '—';
-    const totalOps = state.subyacentes.reduce((a,s) => a + (s.calls||0) + (s.puts||0), 0); // FIX: sin NaN
+    const totalOps = state.subyacentes.reduce((a,s) => a + (s.calls||0) + (s.puts||0), 0);
 
     document.getElementById('h-fecha').textContent = fecha;
     document.getElementById('h-total').textContent = totalOps;
@@ -297,7 +397,7 @@ async function loadData() {
     document.getElementById('h-updated').textContent = 'Act: ' + new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
 
     buildSidebar();
-    if (state.currentSuby) await loadCadena(state.currentSuby, true); // silent: no resetea scroll
+    if (state.currentSuby) await loadCadena(state.currentSuby, true);
   } catch(e) {
     const pill = document.getElementById('live-pill');
     pill.textContent = '● error';
@@ -307,7 +407,6 @@ async function loadData() {
 }
 
 async function loadCadena(suby, silent = false) {
-  // FIX: abortar request anterior si el usuario cambia rápido de subyacente
   cadenaAbort?.abort();
   const ctrl = new AbortController();
   cadenaAbort = ctrl;
@@ -326,7 +425,9 @@ async function loadCadena(suby, silent = false) {
     if (ctrl.signal.aborted) return;
 
     state.currentSuby = suby;
-    state.cadena = d.data || [];
+    const { rows, dropped } = sanitizeCadena(d.data || []);
+    state.cadena = rows;
+    state.dropped = dropped;
 
     const json = JSON.stringify(state.cadena);
     const unchanged = silent && json === lastCadenaJson;
@@ -335,11 +436,11 @@ async function loadCadena(suby, silent = false) {
     document.getElementById('suby-header').style.display = 'block';
     document.getElementById('controls').style.display = 'flex';
 
+    populateVtos();          // primero el select (el header lee el filtro elegido)
     updateSubyHeader(suby);
-    populateVtos();
 
     if (!unchanged) renderView();
-    if (silent) content.scrollTop = scrollTop; // FIX: el refresh de 60s no salta al top
+    if (silent) content.scrollTop = scrollTop;
   } catch(e) {
     if (e.name === 'AbortError') return;
     showEmpty('Error cargando cadena: ' + e.message);
@@ -352,7 +453,11 @@ function updateSubyHeader(suby) {
   const pcRatio = state.resumen.put_call_ratio?.[suby];
   const tasa = state.cadena.find(x => x.tasa_libre != null)?.tasa_libre;
 
-  // FIX: dias_vto respetando el filtro de vencimiento; si es "Todos", mostrar rango
+  // FIX: P/C validado, con tope, y con el color bien (alto = bearish = rojo)
+  const pcValid = typeof pcRatio === 'number' && isFinite(pcRatio);
+  const pcTxt = pcValid ? (pcRatio > PC_CAP ? '>' + PC_CAP : pcRatio.toFixed(2)) : null;
+  const pcCls = !pcValid ? '' : pcRatio >= 1 ? 'dn' : pcRatio <= 0.7 ? 'up' : '';
+
   const vtoSel = document.getElementById('ctrl-vto').value;
   let diasTxt = '—';
   if (vtoSel) {
@@ -373,13 +478,13 @@ function updateSubyHeader(suby) {
     <div class="meta-item">Puts: <span>${s.puts||0}</span></div>
     <div class="meta-item">Vol ARS: <span>${fmtM(s.volumen_ars)}</span></div>
     <div class="meta-item">OI: <span>${fmtN(s.open_interest)}</span></div>
-    ${pcRatio!=null?`<div class="meta-item">Put/Call: <span class="${pcRatio>1?'up':'dn'}">${pcRatio.toFixed(2)}</span></div>`:''}
+    ${pcTxt!=null?`<div class="meta-item">Put/Call: <span class="${pcCls}">${pcTxt}</span></div>`:''}
     <div class="meta-item">Tasa libre: <span>${tasa!=null?tasa+'%':'—'}</span></div>
     <div class="meta-item">Días vto: <span>${diasTxt}</span></div>
+    ${state.dropped>0?`<div class="meta-item" title="Filas descartadas por datos inservibles (sin strike/tipo recuperable)">Inválidas ocultas: <span class="dn">${state.dropped}</span></div>`:''}
   `;
 }
 
-// FIX: vencimientos poblados dinámicamente desde los datos
 function populateVtos() {
   const sel = document.getElementById('ctrl-vto');
   const vtos = [...new Set(state.cadena.map(r => r.vencimiento).filter(Boolean))].sort();
@@ -414,10 +519,9 @@ function buildSidebar() {
   }
   html += '</div>';
   sb.innerHTML = html;
-  // Sin onclick inline: la delegación está cableada una sola vez en wireEvents()
 }
 
-// ── FILTROS COMPARTIDOS (cadena + CSV) ─────────────────────────────────────────
+// ── FILTROS COMPARTIDOS ────────────────────────────────────────────────────────
 function getFilteredRows() {
   const tipo = document.getElementById('ctrl-tipo').value;
   const vto  = document.getElementById('ctrl-vto').value;
@@ -429,9 +533,10 @@ function getFilteredRows() {
   if (show === 'traded') rows = rows.filter(r => (r.volumen_ars||0) > 0);
   if (show === 'oi')     rows = rows.filter(r => (r.open_interest||0) > 0);
 
-  // Orden: strike, luego tipo, luego vencimiento
+  // FIX: filas sin strike van al FINAL, no arriba
+  const sk = r => (r.strike > 0 ? r.strike : Infinity);
   return [...rows].sort((a,b) =>
-    (a.strike||0) - (b.strike||0) ||
+    sk(a) - sk(b) ||
     (a.tipo||'').localeCompare(b.tipo||'') ||
     (a.vencimiento||'').localeCompare(b.vencimiento||''));
 }
@@ -465,11 +570,10 @@ function renderSmile() {
   const allIV = rows.map(r=>r.vol_implicita);
   const ivMin = Math.min(...allIV), ivMax = Math.max(...allIV);
   const ivAvg = (allIV.reduce((a,b)=>a+b,0)/allIV.length).toFixed(2);
-  const atmRow = rows.reduce((b,r)=>Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null);
-  const otmP = puts.filter(r=>r.strike<spot*0.95).at(-1);
-  const otmC = calls.filter(r=>r.strike>spot*1.05)[0];
-  const skew = otmP&&otmC ? +(otmP.vol_implicita-otmC.vol_implicita).toFixed(2) : null; // FIX: numérico
-  // FIX: VH tomado de la primera fila QUE TENGA el dato
+  const atmRow = spot>0 ? rows.reduce((b,r)=>Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null) : null;
+  const otmP = spot>0 ? puts.filter(r=>r.strike<spot*0.95).at(-1) : null;
+  const otmC = spot>0 ? calls.filter(r=>r.strike>spot*1.05)[0] : null;
+  const skew = otmP&&otmC ? +(otmP.vol_implicita-otmC.vol_implicita).toFixed(2) : null;
   const vh = rows.map(r=>r.vol_hist_40r).find(v=>v!=null);
 
   document.getElementById('content').innerHTML = `
@@ -570,8 +674,6 @@ function renderCadena() {
     return;
   }
 
-  const precioSuby = rows.find(r=>r.precio_suby)?.precio_suby || 0;
-
   let html = `<div class="cadena-wrap"><table>
     <thead><tr>
       <th>Symbol</th>
@@ -601,17 +703,17 @@ function renderCadena() {
     <tbody>`;
 
   for (const r of rows) {
-    // ATM unificado: cálculo local con tolerancia, con fallback al campo del backend
-    const isATM = (precioSuby && r.strike && Math.abs((r.strike - precioSuby)/precioSuby) < ATM_TOL) || r.moneyness === 'ATM';
+    const isATM = r.moneyness === 'ATM'; // la sanitización ya la recalculó bien
     const varCls = (r.var_prima_pct||0) >= 0 ? 'pos' : 'neg';
     const varOiCls = (r.var_oi_pct||0) >= 0 ? 'pos' : 'neg';
     const desvCls = (r.desvio_teorico||0) >= 0 ? 'pos' : 'neg';
     const mBadge = r.moneyness === 'ATM' ? 'badge-atm' : r.moneyness === 'ITM' ? 'badge-itm' : 'badge-otm';
     const tipoCls = r.tipo === 'CALL' ? 'pos' : 'neg';
-    const vtoLabelTxt = r.vencimiento ? vtoLabel(r.vencimiento) : '—';
+    const vtoTxt = r.vencimiento ? vtoLabel(r.vencimiento) : '—';
+    const symTitle = r._raw ? ('Línea cruda del feed: ' + (r.symbol_raw||'')) : r.symbol;
 
     html += `<tr class="${isATM?'atm':''}">
-      <td>${esc(r.symbol)}</td>
+      <td><div class="sym${r._raw?' raw':''}" title="${esc(symTitle)}">${esc(r.symbol)}</div></td>
       <td class="center ${tipoCls}">${esc(r.tipo)||'—'}</td>
       <td class="gold">$${fmt(r.strike)}</td>
       <td class="center"><span class="${mBadge}">${esc(r.moneyness)||'—'}</span></td>
@@ -633,7 +735,7 @@ function renderCadena() {
       <td class="${(r.theta||0)<0?'neg':''}">${r.theta!=null?r.theta.toFixed(2):'-'}</td>
       <td>${r.vega!=null?r.vega.toFixed(2):'-'}</td>
       <td class="muted">${r.rho!=null?r.rho.toFixed(2):'-'}</td>
-      <td class="muted">${esc(vtoLabelTxt)}</td>
+      <td class="muted">${esc(vtoTxt)}</td>
     </tr>`;
   }
 
@@ -675,18 +777,18 @@ function renderResumen() {
   }
   html += '</div>';
 
-  const pcEntries = Object.entries(pc).filter(([,v])=>v!=null).sort((a,b)=>b[1]-a[1]);
+  const pcEntries = Object.entries(pc).filter(([,v])=>typeof v==='number'&&isFinite(v)).sort((a,b)=>b[1]-a[1]);
   if (pcEntries.length) {
     html += `<div class="res-card" style="grid-column:1/-1">
       <div class="res-title">Ratio Put/Call por Subyacente</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:8px">`;
     for (const [suby, ratio] of pcEntries) {
-      // FIX: umbrales consistentes color/etiqueta (0.7 / 1.0)
       const cls = ratio >= 1 ? 'neg' : ratio <= 0.7 ? 'pos' : '';
       const tag = ratio >= 1 ? 'Bearish' : ratio < 0.7 ? 'Bullish' : 'Neutral';
+      const txt = ratio > PC_CAP ? '>' + PC_CAP : ratio.toFixed(2);
       html += `<div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
         <div style="font-size:12px;font-weight:600;color:#e8e0cc;margin-bottom:2px">${esc(suby)}</div>
-        <div class="res-val ${cls}" style="font-size:14px">${ratio.toFixed(2)}</div>
+        <div class="res-val ${cls}" style="font-size:14px">${txt}</div>
         <div style="font-size:9px;color:#706858;margin-top:2px">${tag}</div>
       </div>`;
     }
@@ -703,7 +805,6 @@ function exportCsv() {
   if (!rows.length) return;
   const cols = ['symbol','tipo','strike','moneyness','ultimo_precio','apertura_prima','min_prima','max_prima','var_prima_pct','volumen_ars','cant_ops','open_interest','var_oi_pct','precio_teorico','desvio_teorico','vol_implicita','vol_hist_40r','delta','gamma','theta','vega','rho','vencimiento','dias_vto'];
   const head = ['Symbol','Tipo','Strike','Moneyness','Ultimo','Apertura','Min','Max','Var%','Vol ARS','Ops','OI','Var OI%','P.Teorico','Desvio','IV%','VH%','Delta','Gamma','Theta','Vega','Rho','Vencimiento','Dias Vto'];
-  // Separador ';' y coma decimal → abre directo en Excel es-AR. BOM para UTF-8.
   const cell = v => {
     if (v == null) return '';
     const s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
@@ -736,23 +837,19 @@ function fmtN(v) {
   return v.toLocaleString('es-AR');
 }
 
-// ── EVENT WIRING (una sola vez, sobrevive a innerHTML) ─────────────────────────
+// ── EVENT WIRING ───────────────────────────────────────────────────────────────
 function wireEvents() {
-  // Delegación en sidebar (los botones se regeneran con innerHTML)
   document.getElementById('sidebar').addEventListener('click', e => {
     const btn = e.target.closest('.sb-btn');
     if (btn) loadCadena(btn.dataset.suby);
   });
-  // Controles
   document.getElementById('ctrl-tipo').addEventListener('change', renderView);
   document.getElementById('ctrl-vto').addEventListener('change', renderView);
   document.getElementById('ctrl-show').addEventListener('change', renderView);
   document.querySelectorAll('.tab-btn').forEach(b =>
     b.addEventListener('click', () => switchView(b.dataset.view, b)));
   document.getElementById('btn-csv').addEventListener('click', exportCsv);
-  // Refresh inmediato al volver a la pestaña
   document.addEventListener('visibilitychange', () => { if (!document.hidden) loadData(); });
-  // Canvas del smile responsivo
   let rsT;
   window.addEventListener('resize', () => {
     clearTimeout(rsT);
