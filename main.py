@@ -1372,8 +1372,8 @@ async def _veta_get_session() -> dict:
     return {"session": session_id, "conn_id": conn_id}
 
 def _symbol_to_security_id(symbol: str) -> str:
-    """Convierte símbolo BYMA a securityId de Veta: GFGC7000OC → bm_MERV_GFGC7000OC_24hs"""
-    return f"bm_MERV_{symbol}_24hs"
+    """Convierte símbolo BYMA a securityId de Veta: GFGC7000OC → bm_MERV_GFGC7000OC_CI"""
+    return f"bm_MERV_{symbol}_CI"
 
 def _parse_book_msg(raw: str):
     """
