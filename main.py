@@ -354,44 +354,101 @@ def _iamc_url(d: date) -> str:
     """URL del PDF para una fecha dada."""
     return f"{IAMC_BASE}{d.day:02d}{d.month:02d}{d.year}"
 
+async def _extraer_pdf_url(html: str) -> str | None:
+    """
+    Extrae la URL directa del PDF desde el HTML de la página IAMC.
+    El PDF está hosteado en iamcweb.prod.ingecloud.com/TempFiles/
+    """
+    # Buscar URLs de PDF en el HTML
+    patterns = [
+        r'https?://[^\s"\'<>]+\.pdf',
+        r'src=["\']([^"\']+\.pdf)["\']',
+        r'href=["\']([^"\']+\.pdf)["\']',
+        r'url=["\']([^"\']+\.pdf)["\']',
+        r'file=["\']([^"\']+\.pdf)["\']',
+        r'(https?://iamcweb[^\s"\'<>]+)',
+        r'(https?://[^\s"\'<>]+TempFiles[^\s"\'<>]+)',
+    ]
+    for pattern in patterns:
+        matches = re.findall(pattern, html, re.IGNORECASE)
+        for m in matches:
+            url = m if m.startswith('http') else m
+            if '.pdf' in url.lower() or 'TempFiles' in url:
+                print(f"URL PDF encontrada: {url}")
+                return url
+    return None
+
 async def descargar_iamc_pdf(target_date: date = None) -> bool:
-    """Intenta descargar el PDF de IAMC para la fecha dada (o hoy)."""
+    """
+    Intenta descargar el PDF de IAMC para la fecha dada (o hoy).
+    Flujo:
+      1. GET página HTML de IAMC → extraer URL del PDF (iamcweb.prod.ingecloud.com)
+      2. GET PDF directo
+    """
     if target_date is None:
         target_date = datetime.now(TZ_ARG).date()
 
-    # Intentar los últimos 3 días hábiles si el de hoy no está
+    headers_browser = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "es-AR,es;q=0.9",
+    }
+
     for delta in range(0, 5):
         d = target_date - timedelta(days=delta)
-        if d.weekday() >= 5: continue  # saltar finde
-        url = _iamc_url(d)
+        if d.weekday() >= 5: continue
+        page_url = _iamc_url(d)
         try:
             async with httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as client:
-                print(f"Intentando bajar PDF IAMC: {url}")
-                r = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                # Paso 1: bajar la página HTML
+                print(f"Bajando página IAMC: {page_url}")
+                r_page = await client.get(page_url, headers=headers_browser)
+                if r_page.status_code != 200:
+                    print(f"Página no disponible (status={r_page.status_code})")
+                    continue
+
+                html = r_page.text
+                print(f"Página OK ({len(html)} bytes), buscando URL del PDF...")
+
+                # Paso 2: extraer URL del PDF
+                pdf_url = await _extraer_pdf_url(html)
+                if not pdf_url:
+                    print(f"No se encontró URL de PDF en la página de {d}")
+                    # Loguear parte del HTML para debug
+                    print(f"HTML snippet: {html[:500]}")
+                    continue
+
+                # Paso 3: descargar el PDF
+                print(f"Descargando PDF: {pdf_url}")
+                r_pdf = await client.get(pdf_url, headers={
+                    "User-Agent": headers_browser["User-Agent"],
+                    "Referer": page_url,
                     "Accept": "application/pdf,*/*",
                 })
-                if r.status_code == 200 and r.headers.get("content-type","").startswith("application/pdf"):
-                    pdf_bytes = r.content
-                    print(f"PDF bajado OK: {len(pdf_bytes)} bytes, fecha {d}")
+                ct = r_pdf.headers.get("content-type", "")
+                if r_pdf.status_code == 200 and (
+                    "pdf" in ct.lower() or r_pdf.content[:4] == b'%PDF'
+                ):
+                    pdf_bytes = r_pdf.content
+                    print(f"PDF OK: {len(pdf_bytes)} bytes, fecha {d}")
                     rows, resumen, fecha_str = parse_iamc_pdf(pdf_bytes)
-                    print(f"PDF parseado: {len(rows)} opciones")
-                    # Guardar en PG
+                    print(f"Parseado: {len(rows)} opciones")
                     _pg_save_pdf(pdf_bytes, d.isoformat())
                     if rows:
                         _pg_save_opciones(rows, d.isoformat())
-                    # Actualizar estado
-                    state["opciones"]   = rows
-                    state["resumen"]    = resumen
-                    state["fecha"]      = d.isoformat()
-                    state["updated_at"] = datetime.now(TZ_ARG).isoformat()
+                    state["opciones"]    = rows
+                    state["resumen"]     = resumen
+                    state["fecha"]       = d.isoformat()
+                    state["updated_at"]  = datetime.now(TZ_ARG).isoformat()
                     state["descarga_ok"] = True
-                    state["error"]      = None
+                    state["error"]       = None
                     return True
                 else:
-                    print(f"PDF no disponible (status={r.status_code}, ct={r.headers.get('content-type')}): {url}")
+                    print(f"PDF no válido (status={r_pdf.status_code}, ct={ct})")
+
         except Exception as e:
-            print(f"Error descargando {url}: {e}")
+            print(f"Error en fecha {d}: {e}")
+            import traceback; traceback.print_exc()
 
     state["error"] = f"No se pudo bajar el PDF para {target_date}"
     state["descarga_ok"] = False
@@ -619,6 +676,40 @@ async def admin_upload_pdf(pdf: UploadFile = File(...)):
         "total_opciones": len(rows),
         "subyacentes": len(set(r["subyacente"] for r in rows if r.get("subyacente"))),
     }
+
+@app.get("/admin/debug-iamc-html")
+async def debug_iamc_html(fecha_str: str = Query(None)):
+    """Devuelve el HTML crudo de la página IAMC para debug."""
+    if fecha_str:
+        try: d = date.fromisoformat(fecha_str)
+        except: d = datetime.now(TZ_ARG).date()
+    else:
+        d = datetime.now(TZ_ARG).date()
+    # Ir al día hábil anterior si es finde
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    url = _iamc_url(d)
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as client:
+            r = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "text/html,*/*",
+            })
+            # Buscar URLs de PDF en el HTML
+            pdf_urls = re.findall(r'https?://[^\s"\'<>]*(?:\.pdf|TempFiles)[^\s"\'<>]*', r.text, re.IGNORECASE)
+            ingecloud_urls = re.findall(r'https?://iamcweb[^\s"\'<>]+', r.text, re.IGNORECASE)
+            return {
+                "fecha": d.isoformat(),
+                "url": url,
+                "status": r.status_code,
+                "content_type": r.headers.get("content-type"),
+                "html_length": len(r.text),
+                "pdf_urls_found": pdf_urls,
+                "ingecloud_urls_found": ingecloud_urls,
+                "html_snippet": r.text[:2000],
+            }
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/admin/test-iamc-url")
 async def test_iamc_url(fecha_str: str = Query(None)):
