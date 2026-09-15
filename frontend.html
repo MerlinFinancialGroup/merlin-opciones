@@ -184,7 +184,6 @@ td.muted{color:#706858}
           <button class="tab-btn" data-view="smile">IV Smile</button>
           <button class="tab-btn" data-view="resumen">Resumen</button>
         </div>
-        <button class="csv-btn" id="btn-csv" title="Descargar cadena filtrada como CSV">↓ CSV</button>
       </div>
 
       <div class="content" id="content">
@@ -594,7 +593,7 @@ function renderSmile() {
   document.getElementById('content').innerHTML = `
     <div style="padding:16px 20px;overflow:auto;height:100%">
       <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;margin-bottom:14px">
-        <canvas id="sc" width="1200" height="390" style="width:100%;height:390px"></canvas>
+        <canvas id="sc" width="1200" height="507" style="width:100%;height:507px"></canvas>
         <div id="stt" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#c8c0b0;margin-top:4px;min-height:14px"></div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
@@ -616,7 +615,7 @@ function renderSmile() {
 
   const canvas = document.getElementById('sc');
   const dpr = window.devicePixelRatio||1;
-  const W = canvas.offsetWidth, H = 390;
+  const W = canvas.offsetWidth, H = 507;
   canvas.width = W*dpr; canvas.height = H*dpr;
   canvas.style.width = W+'px'; canvas.style.height = H+'px';
   const ctx = canvas.getContext('2d');
@@ -637,7 +636,7 @@ function renderSmile() {
   const yRawMin = Math.min(...allYVals), yRawMax = Math.max(...allYVals);
   const sArr = visRows.map(r=>r.strike);
   const sMin = Math.min(...sArr), sMax = Math.max(...sArr);
-  const yPad = (yRawMax-yRawMin)*0.12||1;
+  const yPad = (yRawMax-yRawMin)*0.03||0.5;
   const yMin = yRawMin-yPad, yMax = yRawMax+yPad;
   const xs = s => pad.l + (sMax===sMin ? cW/2 : (s-sMin)/(sMax-sMin)*cW);
   const ys = v => pad.t + cH - (yMax===yMin ? cH/2 : (v-yMin)/(yMax-yMin)*cH);
@@ -760,9 +759,11 @@ function renderSmile() {
 
   // Zoom con rueda del mouse (eje X, centrado en el cursor)
   // Preservar zoom entre refreshes — solo resetear si cambió el subyacente o vencimiento
-  const zoomKey = (state.currentSuby||'') + '|' + (document.getElementById('ctrl-vto').value||'');
+  const zoomKey = (state.currentSuby||'') + '|' + (document.getElementById('ctrl-vto').value||'') + '|' + st;
   if(!state._smileZoom || state._smileZoomKey !== zoomKey){
-    state._smileZoom = { xMin: sMin, xMax: sMax };
+    // Zoom inicial: ajustar al rango real de strikes con padding del 3%
+    const sRange = sMax - sMin || 1;
+    state._smileZoom = { xMin: sMin - sRange*0.03, xMax: sMax + sRange*0.03 };
     state._smileZoomKey = zoomKey;
   }
   canvas._zoom = state._smileZoom;
@@ -802,7 +803,7 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
   ];
   const yRawMin = yVals.length ? Math.min(...yVals) : yMinFull;
   const yRawMax = yVals.length ? Math.max(...yVals) : yMaxFull;
-  const yPadDyn = (yRawMax - yRawMin) * 0.12 || 1;
+  const yPadDyn = (yRawMax - yRawMin) * 0.03 || 0.5;
   const yMin = yRawMin - yPadDyn;
   const yMax = yRawMax + yPadDyn;
   const xs = s => pad.l + (xMax===xMin ? cW/2 : (s-xMin)/(xMax-xMin)*cW);
@@ -1062,7 +1063,6 @@ function wireEvents() {
   document.getElementById('ctrl-show').addEventListener('change', renderView);
   document.querySelectorAll('.tab-btn').forEach(b =>
     b.addEventListener('click', () => switchView(b.dataset.view, b)));
-  document.getElementById('btn-csv').addEventListener('click', exportCsv);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) loadData(); });
   let rsT;
   window.addEventListener('resize', () => {
