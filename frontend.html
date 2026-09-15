@@ -255,7 +255,6 @@ let state = {
   currentSuby: null,
   view: 'cadena',
   dropped: 0,
-  smileTipo: 'ambos', // 'call' | 'put' | 'ambos'
 };
 let cadenaAbort = null;
 let lastCadenaJson = null;
@@ -568,7 +567,8 @@ function renderSmile() {
   if (show === 'oi')     { base = base.filter(r => (r.open_interest||0) > 0); baseBO = baseBO.filter(r => (r.open_interest||0) > 0); }
   if (!base.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
 
-  const st = state.smileTipo;
+  const tipoFiltro = document.getElementById('ctrl-tipo').value; // 'CALL', 'PUT' o ''
+  const st = tipoFiltro === 'CALL' ? 'call' : tipoFiltro === 'PUT' ? 'put' : 'ambos';
   let rows = st === 'call' ? base.filter(r=>r.tipo==='CALL')
            : st === 'put'  ? base.filter(r=>r.tipo==='PUT')
            : base;
@@ -589,16 +589,9 @@ function renderSmile() {
   const skew = otmP&&otmC ? +(otmP.vol_implicita-otmC.vol_implicita).toFixed(2) : null;
   const vh = rows.map(r=>r.vol_hist_40r).find(v=>v!=null);
 
-  const smileToggleHtml = `
-    <div style="display:flex;gap:4px;margin-bottom:10px;align-items:center">
-      <span style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;margin-right:6px">Mostrar</span>
-      ${['ambos','call','put'].map(v=>`<button onclick="setSmileTipo('${v}')" style="padding:3px 10px;border-radius:4px;border:0.5px solid ${state.smileTipo===v?'#C9960A':'#2a2510'};background:${state.smileTipo===v?'rgba(201,150,10,0.12)':'none'};color:${state.smileTipo===v?'#C9960A':'#a09880'};cursor:pointer;font-size:10px;font-family:'JetBrains Mono',monospace">${v.toUpperCase()}</button>`).join('')}
-    </div>`;
-
   document.getElementById('content').innerHTML = `
     <div style="padding:16px 20px;overflow:auto;height:100%">
       <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;margin-bottom:14px">
-        ${smileToggleHtml}
         <canvas id="sc" width="1200" height="390" style="width:100%;height:390px"></canvas>
         <div id="stt" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#c8c0b0;margin-top:4px;min-height:14px"></div>
       </div>
@@ -695,33 +688,33 @@ function renderSmile() {
   if(showCalls){
     if(soloUno){
       // VI Bid calls: verde lima
-      drawSerie(callsBO, r=>r.vi_bid,   'rgba(100,220,80,0.6)',  'rgba(100,220,80,0.8)',  [3,3]);
+      drawSerie(callsBO, r=>r.vi_bid,   'rgba(58,176,122,0.7)',  'rgba(58,176,122,0.9)',  [3,3]);
       // VI Offer calls: naranja
-      drawSerie(callsBO, r=>r.vi_offer, 'rgba(220,140,30,0.6)',  'rgba(220,140,30,0.8)',  [3,3]);
+      drawSerie(callsBO, r=>r.vi_offer, 'rgba(192,57,43,0.7)',   'rgba(192,57,43,0.9)',   [3,3]);
     }
     // IV Últ calls — línea sólida + puntos grandes
     const cUlt = calls.filter(r=>r.vol_implicita>0);
     if(cUlt.length>=2){
-      ctx.strokeStyle='rgba(58,176,122,0.6)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
+      ctx.strokeStyle='rgba(220,220,220,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
       ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita)));
       ctx.stroke(); ctx.setLineDash([]);
     }
-    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(58,176,122,0.85)'; ctx.fill(); });
+    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(220,220,220,0.9)'; ctx.fill(); });
   }
   if(showPuts){
     if(soloUno){
       // VI Bid puts: rojo claro
-      drawSerie(putsBO, r=>r.vi_bid,   'rgba(240,100,80,0.6)',  'rgba(240,100,80,0.8)',  [3,3]);
+      drawSerie(putsBO, r=>r.vi_bid,   'rgba(58,176,122,0.7)',  'rgba(58,176,122,0.9)',  [3,3]);
       // VI Offer puts: violeta
-      drawSerie(putsBO, r=>r.vi_offer, 'rgba(180,80,220,0.6)',  'rgba(180,80,220,0.8)',  [3,3]);
+      drawSerie(putsBO, r=>r.vi_offer, 'rgba(192,57,43,0.7)',   'rgba(192,57,43,0.9)',   [3,3]);
     }
     const pUlt = puts.filter(r=>r.vol_implicita>0);
     if(pUlt.length>=2){
-      ctx.strokeStyle='rgba(192,57,43,0.6)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
+      ctx.strokeStyle='rgba(201,150,10,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
       ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita)));
       ctx.stroke(); ctx.setLineDash([]);
     }
-    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(192,57,43,0.85)'; ctx.fill(); });
+    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(201,150,10,0.9)'; ctx.fill(); });
   }
 
   // Leyenda
@@ -729,12 +722,12 @@ function renderSmile() {
   const ly = pad.t - 14;
   const legendItems = [];
   if(showCalls){
-    legendItems.push(['CALL Últ','rgba(58,176,122,0.85)',false]);
-    if(soloUno){ legendItems.push(['VI Bid','rgba(100,220,80,0.8)',true],['VI Offer','rgba(220,140,30,0.8)',true]); }
+    legendItems.push(['CALL Últ','rgba(220,220,220,0.9)',false]);
+    if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
   if(showPuts){
-    legendItems.push(['PUT Últ','rgba(192,57,43,0.85)',false]);
-    if(soloUno){ legendItems.push(['VI Bid','rgba(240,100,80,0.8)',true],['VI Offer','rgba(180,80,220,0.8)',true]); }
+    legendItems.push(['PUT Últ','rgba(201,150,10,0.9)',false]);
+    if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
   ctx.font='9px monospace'; ctx.textAlign='left';
   for(const [label,col,isDash] of legendItems){
@@ -846,21 +839,21 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
   }
   if(showCalls){
     if(soloUno){
-      drawS(callsBO,r=>r.vi_bid,'rgba(100,220,80,0.6)','rgba(100,220,80,0.8)',[3,3]);
-      drawS(callsBO,r=>r.vi_offer,'rgba(220,140,30,0.6)','rgba(220,140,30,0.8)',[3,3]);
+      drawS(callsBO,r=>r.vi_bid,'rgba(58,176,122,0.7)','rgba(58,176,122,0.9)',[3,3]);
+      drawS(callsBO,r=>r.vi_offer,'rgba(192,57,43,0.7)','rgba(192,57,43,0.9)',[3,3]);
     }
     const cUlt=calls.filter(r=>r.vol_implicita>0&&r.strike>=xMin&&r.strike<=xMax);
-    if(cUlt.length>=2){ ctx.strokeStyle='rgba(58,176,122,0.6)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita))); ctx.stroke(); ctx.setLineDash([]); }
-    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(58,176,122,0.85)'; ctx.fill(); });
+    if(cUlt.length>=2){ ctx.strokeStyle='rgba(220,220,220,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita))); ctx.stroke(); ctx.setLineDash([]); }
+    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(220,220,220,0.9)'; ctx.fill(); });
   }
   if(showPuts){
     if(soloUno){
-      drawS(putsBO,r=>r.vi_bid,'rgba(240,100,80,0.6)','rgba(240,100,80,0.8)',[3,3]);
-      drawS(putsBO,r=>r.vi_offer,'rgba(180,80,220,0.6)','rgba(180,80,220,0.8)',[3,3]);
+      drawS(putsBO,r=>r.vi_bid,'rgba(58,176,122,0.7)','rgba(58,176,122,0.9)',[3,3]);
+      drawS(putsBO,r=>r.vi_offer,'rgba(192,57,43,0.7)','rgba(192,57,43,0.9)',[3,3]);
     }
     const pUlt=puts.filter(r=>r.vol_implicita>0&&r.strike>=xMin&&r.strike<=xMax);
-    if(pUlt.length>=2){ ctx.strokeStyle='rgba(192,57,43,0.6)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita))); ctx.stroke(); ctx.setLineDash([]); }
-    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(192,57,43,0.85)'; ctx.fill(); });
+    if(pUlt.length>=2){ ctx.strokeStyle='rgba(201,150,10,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita))); ctx.stroke(); ctx.setLineDash([]); }
+    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(201,150,10,0.9)'; ctx.fill(); });
   }
   // Leyenda
   let lx=pad.l; ctx.font='9px monospace'; ctx.textAlign='left';
@@ -873,10 +866,6 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
   }
 }
 
-function setSmileTipo(v) {
-  state.smileTipo = v;
-  renderSmile();
-}
 
 function renderCadena() {
   const rows = getFilteredRows();
