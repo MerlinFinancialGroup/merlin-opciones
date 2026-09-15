@@ -21,6 +21,7 @@ except ImportError:
 # ── Config ─────────────────────────────────────────────────────────────────────
 DATABASE_URL  = os.getenv("DATABASE_URL", "")
 VETA_COOKIE   = os.getenv("VETA_COOKIE", "")
+VETA_ACCOUNT  = os.getenv("VETA_ACCOUNT", "")
 TZ_ARG        = ZoneInfo("America/Argentina/Buenos_Aires")
 
 IAMC_BASE = "https://www.iamc.com.ar/Informe/InformeDiarioOpciones"
@@ -1304,8 +1305,16 @@ _veta_ws_task = None
 _veta_session = {"id": None, "conn_id": None, "csrf": None}
 
 async def _veta_get_session() -> dict:
-    """Obtiene session_id y csrfToken desde /profile."""
+    """Extrae session_id de la cookie _mtz_web_key y obtiene csrfToken del profile."""
     if not VETA_COOKIE: return {}
+    # Extraer _mtz_web_key de la cookie
+    session_id = None
+    for part in VETA_COOKIE.split(';'):
+        part = part.strip()
+        if part.startswith('_mtz_web_key='):
+            session_id = part[len('_mtz_web_key='):]
+            break
+    conn_id = str(int(datetime.now().timestamp() * 1000))
     try:
         async with httpx.AsyncClient(timeout=10, verify=False) as c:
             r = await c.get(f"{VETA_BASE}/profile",
@@ -1318,14 +1327,12 @@ async def _veta_get_session() -> dict:
                 })
             if r.status_code == 200:
                 data = r.json()
-                return {
-                    "csrf":    data.get("csrfToken"),
-                    "session": data.get("sessionId") or data.get("session_id"),
-                    "conn_id": data.get("connectionId") or data.get("conn_id") or str(int(datetime.now().timestamp()*1000)),
-                }
+                csrf = data.get("csrfToken")
+                print(f"[Veta] Profile OK, session_id={str(session_id)[:20]}..., csrf={str(csrf)[:20]}...")
+                return {"csrf": csrf, "session": session_id, "conn_id": conn_id}
     except Exception as e:
         print(f"[Veta] Error obteniendo sesión: {e}")
-    return {}
+    return {"session": session_id, "conn_id": conn_id}
 
 def _symbol_to_security_id(symbol: str) -> str:
     """Convierte símbolo BYMA a securityId de Veta: GFGC7000OC → bm_MERV_GFGC7000OC_24hs"""
