@@ -245,11 +245,11 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
             for page in pdf.pages:
                 text = page.extract_text() or ""
 
-                # Detectar contexto de la página
-                m_tasa = re.search(r'Tasa Libre Riesgo\s+([\d.]+)%', text)
+                # Detectar tasa libre y días al vencimiento
+                m_tasa = re.search(r'Tasa Libre Riesgo[^\d]*([\d.]+)%', text)
                 if m_tasa: current_tasa = float(m_tasa.group(1))
 
-                m_dias = re.search(r'Días al Vencimiento\s+(\d+)', text)
+                m_dias = re.search(r'Días al Vencimiento[^\d]*(\d+)', text)
                 if m_dias: current_dias = int(m_dias.group(1))
 
                 if 'Octubre' in text and '16/10/2026' in text:
