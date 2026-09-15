@@ -30,8 +30,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 # ── Estado global ──────────────────────────────────────────────────────────────
 state = {
-    "opciones": [],          # lista de filas parseadas
-    "resumen": {},           # ranking volumen / OI / put-call
+    "opciones": [],
+    "resumen": {},
     "fecha": None,
     "updated_at": None,
     "descarga_ok": False,
@@ -165,16 +165,16 @@ def _pg_load_opciones(fecha: str = None):
         print(f"PG load opciones error: {e}")
         return []
 
-# ── NUEVO: Mapeo prefijo de opción → subyacente ────────────────────────────────
+# ── Mapeo prefijo de opción → subyacente ───────────────────────────────────────
 # La convención BYMA es estable: ticker de opción = prefijo + C/V + strike + serie.
 # Ej: GFGC4200OC → GFG + C + 4200 + OC (CALL 4200, serie octubre)
 # Este dict es LA fuente de verdad para asignar subyacente (el encabezado del PDF
-# se mezcla entre secciones: CRES/COME, TXAR/TRAN). Si aparece un prefijo nuevo,
-# se ve en /admin/debug-symbols y se agrega acá.
+# se mezcla entre secciones). Si aparece un prefijo nuevo, se ve en
+# /admin/debug-symbols y se agrega acá.
 OPCION_MAP = {
     # Panel Merval
     "GFG":  "GGAL",   # Grupo Financiero Galicia
-    "GGAL": "GGAL",   # por si el PDF usa el ticker completo
+    "GGAL": "GGAL",
     "YPF":  "YPFD",
     "YPFD": "YPFD",
     "BBA":  "BBAR",
@@ -184,15 +184,16 @@ OPCION_MAP = {
     "MET":  "METR",
     "METR": "METR",
     "CRO":  "CRES",   # Cresud
-    "CRE":  "CRES",   # Cresud (variante)
+    "CRE":  "CRES",
     "CRES": "CRES",
     "SUP":  "SUPV",
     "SUPV": "SUPV",
     "TGS":  "TGSU2",
-    "TGSU": "TGSU2",  # por si el prefijo incluye la U
+    "TGSU": "TGSU2",
     "EDN":  "EDN",
     "VIST": "VIST",
     "VIS":  "VIST",
+    "VST":  "VIST",   # FIX: prefijo real de Vista según log
     "BMK":  "BYMA",   # BYMA — verificar con /admin/debug-symbols
     "BYM":  "BYMA",
     "BYMA": "BYMA",
@@ -200,6 +201,8 @@ OPCION_MAP = {
     "ALU":  "ALUA",
     "ALUA": "ALUA",
     "BMA":  "BMA",
+    "BHI":  "BHIP",   # FIX: Banco Hipotecario (según log)
+    "TEC":  "TECO2",  # FIX: Telecom Argentina (según log)
     "TRA":  "TRAN",   # Transportadora Gas del Norte
     "TRAN": "TRAN",
     "COM":  "COME",
@@ -215,6 +218,7 @@ OPCION_MAP = {
     "IRC":  "IRCP",
     "CEP":  "CEPU",
     "CEPU": "CEPU",
+    "CEC":  "CEPU",   # FIX: aparenta ser Central Puerto — VERIFICAR con debug-symbols
     "VAL":  "VALO",
     "VALO": "VALO",
     "TGN":  "TGNO4",
@@ -225,6 +229,12 @@ OPCION_MAP = {
 
 # Símbolo BYMA: prefijo + C/V + strike (decimales opcionales) + serie opcional
 RE_OPCION = re.compile(r'^([A-Z0-9]+?)([CV])(\d{2,7}(?:\.\d+)?)\.?([A-Z]{1,2})?$')
+
+# Para detectar basura: cualquier fragmento que parezca símbolo de opción
+RE_SYM_FRAGMENT = re.compile(r'[A-Z0-9]{2,8}[CV]\d')
+
+# Hora tipo 16:32:25 o 16:32 (ancla para recuperar líneas colapsadas)
+RE_HORA = re.compile(r'^\d{1,2}:\d{2}(:\d{2})?$')
 
 def parse_symbol(sym: str):
     """Divide el símbolo: GFGC4200OC → ('GFG','CALL',4200.0,'OC')."""
@@ -241,7 +251,7 @@ def resolve_suby(pref: str):
             return OPCION_MAP[pref[:L]]
     return None
 
-# ── NUEVO: sanity check por fila (IVs/griegas basura del PDF) ──────────────────
+# ── Sanity check por fila (IVs/griegas basura del PDF) ─────────────────────────
 def _sanity_fix_row(r: dict):
     # Primas negativas no existen
     for f in ("apertura_prima", "min_prima", "max_prima", "ultimo_precio", "precio_teorico"):
@@ -276,11 +286,131 @@ def _pi(v):
     f = _pf(v)
     return int(f) if f is not None else None
 
+def _recover_line_row(line: str, ctx: dict, learned_series: dict, unmapped: set):
+    """
+    NUEVO: recupera filas que pdfplumber colapsó en una única celda, ej:
+      'TXAC700.DI 700 -4.71% OTM 669.5 60.0 60.0 60.0 60.0 16:32:25 60000.0 1 60.00 0.00 60.00 34.57% 39.80% 0.57 0.0029 -0.49 1.36 0.86'
+      'YPFC9400DI 9400 -6.06% OTM 8830.0 0.0 0 30.62%'
+    Devuelve dict de fila o None si es basura inservible (página de rankings, etc.).
+    Estrategia: anclas conocidas — moneyness (ITM/OTM/ATM), hora (HH:MM:SS),
+    y cola de griegas (VH%, IV%, delta, gamma, theta, vega, rho).
+    """
+    toks = line.split()
+    if not toks: return None
+
+    # Página de rankings: varios símbolos de opción en la misma línea → basura
+    if len(RE_SYM_FRAGMENT.findall(line)) > 1:
+        return None
+
+    info = parse_symbol(toks[0])
+    if not info: return None
+    pref, tipo, strike, serie = info
+
+    suby = resolve_suby(pref)
+    if suby is None:
+        unmapped.add(pref)
+        return None   # sin mapeo no asignamos subyacente (evita contaminación)
+
+    vto = ctx.get("vto")
+    if serie:
+        if vto:
+            learned_series.setdefault(serie, vto)
+            learned_series.setdefault(serie[:1], vto)
+        else:
+            vto = learned_series.get(serie) or learned_series.get(serie[:1])
+
+    row = {"symbol": toks[0].upper(), "tipo": tipo, "subyacente": suby,
+           "vencimiento": vto, "strike": strike,
+           "tasa_libre": ctx.get("tasa"), "dias_vto": ctx.get("dias"),
+           "_recovered": True}
+
+    rest = toks[1:]
+    mon_idx = next((i for i, t in enumerate(rest) if t in ('ITM', 'OTM', 'ATM')), None)
+    if mon_idx is None:
+        return row  # sin ancla moneyness: solo identidad (strike/tipo/suby)
+    if mon_idx > 0 and rest[mon_idx-1].endswith('%'):
+        row["distancia_itm_otm"] = rest[mon_idx-1]
+    row["moneyness"] = rest[mon_idx]
+    if mon_idx + 1 >= len(rest):
+        return row
+    row["precio_suby"] = _pf(rest[mon_idx + 1])
+    after = rest[mon_idx + 2:]
+
+    # ── Cola de griegas completa: ..., VH%, IV%, delta, gamma, theta, vega, rho
+    if len(after) >= 7:
+        last5 = after[-5:]
+        if (all(_pf(t) is not None and not t.endswith('%') for t in last5)
+                and after[-7].endswith('%') and after[-6].endswith('%')):
+            row["vol_hist_40r"]  = _pf(after[-7])
+            row["vol_implicita"] = _pf(after[-6])
+            row["delta"] = _pf(after[-5])
+            row["gamma"] = _pf(after[-4])
+            row["theta"] = _pf(after[-3])
+            row["vega"]  = _pf(after[-2])
+            row["rho"]   = _pf(after[-1])
+            after = after[:-7]
+    # ── Cola parcial (sin VH): ..., IV%, delta, gamma, theta, vega, rho
+    elif len(after) >= 6:
+        last5 = after[-5:]
+        if (all(_pf(t) is not None and not t.endswith('%') for t in last5)
+                and after[-6].endswith('%')):
+            row["vol_implicita"] = _pf(after[-6])
+            row["delta"] = _pf(after[-5])
+            row["gamma"] = _pf(after[-4])
+            row["theta"] = _pf(after[-3])
+            row["vega"]  = _pf(after[-2])
+            row["rho"]   = _pf(after[-1])
+            after = after[:-6]
+
+    # ── Ancla hora: separa [apertura..var%] | hora | [vol..vt]
+    hora_idx = next((i for i, t in enumerate(after) if RE_HORA.match(t)), None)
+    if hora_idx is not None:
+        left, middle = after[:hora_idx], after[hora_idx + 1:]
+        row["hora_ultimo"] = after[hora_idx]
+        # izquierda: apertura, min, max, ultimo (+ var% al final si está)
+        vals, varpct = [], None
+        for t in left:
+            if t.endswith('%'):
+                varpct = _pf(t); break
+            f = _pf(t)
+            if f is None: break
+            vals.append(f)
+        for field, v in zip(("apertura_prima", "min_prima", "max_prima", "ultimo_precio"), vals):
+            row[field] = v
+        if varpct is not None: row["var_prima_pct"] = varpct
+        # middle: volumen, ops, oi, var_oi, teórico, desvío, valor temporal
+        mvals = [_pf(t) for t in middle if _pf(t) is not None]
+        for field, v in zip(("volumen_ars", "cant_ops", "open_interest", "var_oi_pct",
+                             "precio_teorico", "desvio_teorico", "valor_temporal"), mvals):
+            row[field] = v
+        if row.get("cant_ops") is not None: row["cant_ops"] = int(row["cant_ops"])
+        if row.get("open_interest") is not None: row["open_interest"] = int(row["open_interest"])
+    else:
+        # Sin hora: números → apertura/min/max/ultimo; % → VH (y IV si hay dos)
+        vals, pcts = [], []
+        for t in after:
+            if t.endswith('%'):
+                pcts.append(_pf(t))
+            else:
+                f = _pf(t)
+                if f is not None and len(vals) < 4:
+                    vals.append(f)
+        for field, v in zip(("apertura_prima", "min_prima", "max_prima", "ultimo_precio"), vals):
+            row[field] = v
+        if len(pcts) == 1:
+            row["vol_hist_40r"] = pcts[0]      # sin trades no hay IV, sí VH
+        elif len(pcts) >= 2:
+            row["vol_hist_40r"]  = pcts[-2]
+            row["vol_implicita"] = pcts[-1]
+
+    return row
+
 def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
     """
     Parsea el PDF de IAMC.
-    FIX: el subyacente se resuelve desde el SÍMBOLO de la opción (OPCION_MAP),
-    no desde el encabezado de página, que se mezcla entre secciones.
+    - El subyacente se resuelve desde el SÍMBOLO (OPCION_MAP), no del encabezado.
+    - NUEVO: filas colapsadas en una celda se recuperan con _recover_line_row.
+    - NUEVO: la página de rankings (basura multi-símbolo) se descarta.
     La tabla tiene 78 columnas, cada campo ocupa 3 celdas (valor, vacío, vacío).
     """
     if not HAS_PDF: return [], {}, None
@@ -319,8 +449,10 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
     STR_FIELDS  = {"symbol", "moneyness", "hora_ultimo", "distancia_itm_otm"}
     INT_FIELDS  = {"cant_ops", "open_interest"}
 
-    mixed, unmapped = [], set()   # diagnóstico: mezclas reasignadas / prefijos faltantes
-    learned_series = {}           # serie ('OC','DI',...) → fecha vto, aprendida del texto
+    mixed, unmapped = [], set()
+    learned_series = {}
+    garbage_skipped = 0
+    recovered_count = 0
 
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
@@ -329,23 +461,19 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
             if m_fecha:
                 fecha_str = f"{m_fecha.group(1)}-{m_fecha.group(2)}-{m_fecha.group(3)}"
 
-            current_suby    = None
-            current_tipo    = None
-            current_vto     = None
-            current_tasa    = None
-            current_dias    = None
+            current_suby, current_tipo, current_vto = None, None, None
+            current_tasa, current_dias = None, None
 
             for page in pdf.pages:
                 text = page.extract_text() or ""
 
-                # Tasa libre y días al vencimiento
                 m_tasa = re.search(r'Tasa Libre Riesgo[^\d]*([\d.]+)%', text)
                 if m_tasa: current_tasa = float(m_tasa.group(1))
 
                 m_dias = re.search(r'Días al Vencimiento[^\d]*(\d+)', text)
                 if m_dias: current_dias = int(m_dias.group(1))
 
-                # FIX: vencimiento leído de cualquier "Mes DD/MM/YYYY" (no hardcodeado)
+                # Vencimiento: cualquier "Mes DD/MM/YYYY" en el texto
                 m_vto = re.search(
                     r'(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|'
                     r'Octubre|Noviembre|Diciembre)\s+\.?\s*(\d{1,2})/(\d{1,2})/(\d{2,4})', text)
@@ -362,87 +490,99 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                 elif 'OPCIONES DE VENTA (PUT)' in text:
                     current_tipo = 'PUT'
 
-                # Encabezado de subyacente: solo fallback ahora
+                # Encabezado de subyacente: solo fallback
                 for line in text.split('\n'):
                     m_s = re.match(r'^(.+?)\s*\(([A-Z0-9]{2,6})\)\s*$', line.strip())
                     if m_s and len(m_s.group(2)) <= 6:
                         current_suby = m_s.group(2)
 
-                # Procesar tablas
-                tables = page.extract_tables()
-                for table in tables:
+                for table in page.extract_tables():
                     for row in table:
                         if not row or len(row) < 10: continue
-                        sym = str(row[0] or '').strip().upper()
-                        if not re.match(r'^[A-Z0-9]{2,8}[CV]\d', sym):
-                            continue
+                        sym_raw = str(row[0] or '').strip()
+                        if not sym_raw: continue
 
-                        col_strike = _pf(row[3]) if len(row) > 3 else None
+                        r_parsed = None
 
-                        # ── FIX: el símbolo manda ──
-                        info = parse_symbol(sym)
-                        if info:
+                        if re.search(r'\s', sym_raw):
+                            # ── NUEVO: celda colapsada (línea entera en row[0]) ──
+                            ctx = {"suby": current_suby, "tipo": current_tipo,
+                                   "vto": current_vto, "tasa": current_tasa, "dias": current_dias}
+                            r_parsed = _recover_line_row(sym_raw, ctx, learned_series, unmapped)
+                            if r_parsed is None:
+                                garbage_skipped += 1   # ranking page u otra basura
+                                continue
+                            recovered_count += 1
+                        else:
+                            # ── Fila normal ──
+                            sym = sym_raw.upper()
+                            if not re.match(r'^[A-Z0-9]{2,8}[CV]\d', sym): continue
+
+                            info = parse_symbol(sym)
+                            if not info:
+                                unmapped.add(f"UNPARSED:{sym}")
+                                continue
                             pref, tipo_sym, strike_sym, serie = info
+
                             suby = resolve_suby(pref)
                             if suby is None:
                                 unmapped.add(pref)
                                 suby = current_suby            # fallback: encabezado
                             elif current_suby and suby != current_suby:
                                 mixed.append((sym, current_suby, suby))
-                            tipo   = tipo_sym or current_tipo
-                            strike = strike_sym if strike_sym else col_strike
-                            vto    = current_vto
+
+                            tipo = tipo_sym or current_tipo
+                            strike = strike_sym if strike_sym else (_pf(row[3]) if len(row) > 3 else None)
+
+                            vto = current_vto
                             if serie and current_vto:
                                 learned_series.setdefault(serie, current_vto)
                                 learned_series.setdefault(serie[:1], current_vto)
                             if not vto and serie:
                                 vto = learned_series.get(serie) or learned_series.get(serie[:1])
-                        else:
-                            # Símbolo no parseable: mantener comportamiento viejo + loguear
-                            unmapped.add(f"UNPARSED:{sym}")
-                            suby, tipo, strike, vto = current_suby, current_tipo, col_strike, current_vto
 
-                        r_parsed = {"symbol": sym, "tipo": tipo, "subyacente": suby,
-                                    "vencimiento": vto, "strike": strike,
-                                    "tasa_libre": current_tasa, "dias_vto": current_dias}
+                            r_parsed = {"symbol": sym, "tipo": tipo, "subyacente": suby,
+                                        "vencimiento": vto, "strike": strike,
+                                        "tasa_libre": current_tasa, "dias_vto": current_dias}
 
-                        for col_idx, field in COL_MAP.items():
-                            if field in ("symbol", "strike"): continue
-                            val = row[col_idx] if col_idx < len(row) else None
-                            val = str(val).strip() if val is not None else None
-                            if not val or val in ('', 'None'):
-                                r_parsed[field] = None
-                                continue
-                            if field in STR_FIELDS:
-                                r_parsed[field] = val
-                            elif field in INT_FIELDS:
-                                r_parsed[field] = _pi(val)
-                            else:
-                                r_parsed[field] = _pf(val)
+                            for col_idx, field in COL_MAP.items():
+                                if field in ("symbol", "strike"): continue
+                                val = row[col_idx] if col_idx < len(row) else None
+                                val = str(val).strip() if val is not None else None
+                                if not val or val in ('', 'None'):
+                                    r_parsed[field] = None
+                                    continue
+                                if field in STR_FIELDS:
+                                    r_parsed[field] = val
+                                elif field in INT_FIELDS:
+                                    r_parsed[field] = _pi(val)
+                                else:
+                                    r_parsed[field] = _pf(val)
 
                         r_parsed = _sanity_fix_row(r_parsed)
                         rows.append(r_parsed)
 
-                        # Acumular resumen (con el subyacente ya bien asignado)
-                        if suby:
+                        # Acumular resumen
+                        suby_acc = r_parsed.get("subyacente")
+                        if suby_acc:
                             vol = r_parsed.get("volumen_ars") or 0
                             oi  = r_parsed.get("open_interest") or 0
-                            resumen_vol[suby] = resumen_vol.get(suby, 0) + vol
-                            resumen_oi[suby]  = resumen_oi.get(suby, 0) + oi
-                            resumen_pc.setdefault(suby, {"put": 0, "call": 0})
-                            resumen_pc_oi.setdefault(suby, {"put": 0, "call": 0})
-                            if tipo == 'PUT':
-                                resumen_pc[suby]["put"]    += vol
-                                resumen_pc_oi[suby]["put"] += oi
+                            resumen_vol[suby_acc] = resumen_vol.get(suby_acc, 0) + vol
+                            resumen_oi[suby_acc]  = resumen_oi.get(suby_acc, 0) + oi
+                            resumen_pc.setdefault(suby_acc, {"put": 0, "call": 0})
+                            resumen_pc_oi.setdefault(suby_acc, {"put": 0, "call": 0})
+                            if r_parsed.get("tipo") == 'PUT':
+                                resumen_pc[suby_acc]["put"]    += vol
+                                resumen_pc_oi[suby_acc]["put"] += oi
                             else:
-                                resumen_pc[suby]["call"]    += vol
-                                resumen_pc_oi[suby]["call"] += oi
+                                resumen_pc[suby_acc]["call"]    += vol
+                                resumen_pc_oi[suby_acc]["call"] += oi
 
     except Exception as e:
         print(f"PDF parse error: {e}")
         import traceback; traceback.print_exc()
 
-    # ── NUEVO: moneyness recalculada con el spot dominante real por subyacente ──
+    # ── Moneyness recalculada con el spot dominante real por subyacente ──
     spots_raw = {}
     for r in rows:
         s = r.get("subyacente"); p = r.get("precio_suby")
@@ -456,10 +596,14 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                               ('ITM' if diff < 0 else 'OTM') if r["tipo"] == 'CALL' else
                               ('ITM' if diff > 0 else 'OTM'))
 
-    # ── NUEVO: diagnóstico en logs ──
+    # ── Diagnóstico ──
     if mixed:
         print(f"[parser] {len(mixed)} filas reasignadas por símbolo (mezcla detectada). "
               f"Muestra: {mixed[:10]}")
+    if recovered_count:
+        print(f"[parser] {recovered_count} filas recuperadas desde línea colapsada")
+    if garbage_skipped:
+        print(f"[parser] {garbage_skipped} filas de basura descartadas (rankings/otras)")
     if unmapped:
         print(f"[parser] ⚠ Prefijos sin mapear: {sorted(unmapped)[:20]} — "
               f"completar OPCION_MAP. Ver /admin/debug-symbols")
@@ -477,7 +621,6 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
             k: round(v["put"] / v["call"], 3) if v["call"] > 0 else None
             for k, v in resumen_pc.items()
         },
-        # NUEVO: ratio por OI (más estable que por volumen en días de poco trade)
         "put_call_ratio_oi": {
             k: round(v["put"] / v["call"], 3) if v["call"] > 0 else None
             for k, v in resumen_pc_oi.items()
@@ -487,7 +630,6 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
 
 IAMC_DIARIO_URL = "https://www.iamc.com.ar/informediario/"
 
-# ── NUEVO: URL predecible del informe por fecha (para test-iamc-url) ───────────
 def _iamc_url(d: date) -> str:
     return f"https://www.iamc.com.ar/Informe/InformeDiarioOpciones{d:%d%m%Y}/"
 
@@ -658,7 +800,6 @@ async def scheduler():
     - Reintenta cada 15 min hasta las 20:00 si no lo consiguió
     """
     print("Scheduler de IAMC iniciado")
-    # Al arrancar: intentar cargar desde PG primero
     pdf_bytes, fecha = _pg_load_latest()
     if pdf_bytes:
         rows, resumen, fecha_str = parse_iamc_pdf(pdf_bytes)
@@ -882,7 +1023,6 @@ async def admin_reparse():
         "muestra_ggal": [r for r in rows if r.get("subyacente") == "GGAL"][:3],
     }
 
-# ── FIX: faltaban los decorators — el endpoint no era accesible ────────────────
 @app.get("/admin/refresh")
 @app.post("/admin/refresh")
 async def admin_refresh(fecha_str: str = Query(None)):
@@ -976,7 +1116,6 @@ async def get_disponibles():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-# ── NUEVO: diagnóstico de prefijos para completar OPCION_MAP ───────────────────
 @app.get("/admin/debug-symbols")
 async def debug_symbols():
     """Prefijos de símbolos vistos, a qué subyacente resolvieron y conteo.
@@ -1076,7 +1215,6 @@ async def debug_page(page_num: int):
         import traceback
         return {"error": str(e), "traceback": traceback.format_exc()}
 
-# ── FIX: esta función existía pero no tenía route (código muerto) ──────────────
 @app.get("/admin/debug-iamc")
 async def debug_iamc_html():
     try:
