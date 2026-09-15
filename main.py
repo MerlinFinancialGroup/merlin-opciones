@@ -1473,7 +1473,19 @@ async def _veta_ws_loop():
             print(f"[Veta WS] Error: {e}. Reconectando en 10s...")
         await asyncio.sleep(10)
 
-@app.get("/api/opciones/orderbook/{symbol}")
+@app.get("/admin/veta-status")
+async def veta_status():
+    """Estado del WebSocket de Veta y books recibidos."""
+    return {
+        "veta_cookie_ok": bool(VETA_COOKIE),
+        "ws_task_running": _veta_ws_task is not None and not _veta_ws_task.done(),
+        "session_id": str(_veta_session.get("id",""))[:30] if _veta_session.get("id") else None,
+        "books_en_cache": len(_veta_books),
+        "muestra_books": {k: v for k, v in list(_veta_books.items())[:3]},
+        "subs_activas": list(_veta_books.keys())[:10],
+    }
+
+
 async def get_orderbook(symbol: str):
     """Bid/ask en tiempo real desde Veta WebSocket."""
     if not VETA_COOKIE:
