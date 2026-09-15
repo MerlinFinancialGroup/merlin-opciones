@@ -355,6 +355,92 @@ def _sanity_fix_row(r: dict):
             r[f] = None
     return r
 
+def _norm_cdf(x):
+    """CDF de la normal estándar (aproximación de Abramowitz & Stegun)."""
+    import math
+    a1,a2,a3,a4,a5,p = 0.254829592,-0.284496736,1.421413741,-1.453152027,1.061405429,0.3275911
+    sign = 1 if x >= 0 else -1
+    x = abs(x)
+    t = 1.0 / (1.0 + p * x)
+    y = 1.0 - (((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*math.exp(-x*x)
+    return 0.5 * (1.0 + sign * y)
+
+def _bs_price(S, K, T, r, sigma, tipo):
+    """Precio Black-Scholes europeo."""
+    import math
+    if T <= 0 or sigma <= 0: return max(0, S-K) if tipo=='CALL' else max(0, K-S)
+    d1 = (math.log(S/K) + (r + 0.5*sigma*sigma)*T) / (sigma*math.sqrt(T))
+    d2 = d1 - sigma*math.sqrt(T)
+    if tipo == 'CALL':
+        return S*_norm_cdf(d1) - K*math.exp(-r*T)*_norm_cdf(d2)
+    return K*math.exp(-r*T)*_norm_cdf(-d2) - S*_norm_cdf(-d1)
+
+def _calc_iv(precio_mercado, S, K, T, r, tipo, tol=1e-5, max_iter=100):
+    """
+    Calcula IV por bisección dado el precio de mercado.
+    Devuelve IV en % (ej: 42.5) o None si no converge.
+    """
+    if not precio_mercado or precio_mercado <= 0: return None
+    if not S or S <= 0 or not K or K <= 0: return None
+    if not T or T <= 0: return None
+    # Valor intrínseco
+    intrinsic = max(0, S-K) if tipo=='CALL' else max(0, K-S)
+    if precio_mercado <= intrinsic: return None
+    lo, hi = 0.001, 10.0  # 0.1% a 1000%
+    for _ in range(max_iter):
+        mid = (lo + hi) / 2
+        price = _bs_price(S, K, T, r, mid, tipo)
+        diff = price - precio_mercado
+        if abs(diff) < tol:
+            return round(mid * 100, 4)
+        if diff > 0:
+            hi = mid
+        else:
+            lo = mid
+        if hi - lo < 1e-7:
+            break
+    iv = (lo + hi) / 2 * 100
+    return round(iv, 4) if 0.5 <= iv <= 300 else None
+
+def _enrich_iv(rows: list) -> list:
+    """
+    Para filas sin IV del PDF, calcula IV desde el último precio operado.
+    Usa tasa_libre del PDF (en %) convertida a continua, T en años ACT/365.
+    """
+    # Tasas por vencimiento del PDF (fallback si tasa_libre es null)
+    TASA_VTO = {
+        "2026-10-16": 0.2316,  # 23.16% octubre
+        "2026-12-18": 0.2418,  # 24.18% diciembre
+    }
+    for r in rows:
+        # Solo si no tiene IV del PDF
+        if r.get("vol_implicita") is not None:
+            r["iv_source"] = "iamc"
+            continue
+        # Solo si tiene último precio
+        ultimo = r.get("ultimo_precio")
+        if not ultimo or ultimo <= 0:
+            r["iv_source"] = None
+            continue
+        S     = r.get("precio_suby")
+        K     = r.get("strike")
+        dias  = r.get("dias_vto")
+        tipo  = r.get("tipo")
+        vto   = r.get("vencimiento")
+        # Tasa: del PDF o fallback por vencimiento
+        tasa_pct = r.get("tasa_libre")
+        if tasa_pct:
+            r_rate = tasa_pct / 100
+        else:
+            r_rate = TASA_VTO.get(vto, 0.2316)
+        if not dias or dias <= 0: continue
+        T = dias / 365.0
+        iv = _calc_iv(ultimo, S, K, T, r_rate, tipo)
+        if iv is not None:
+            r["vol_implicita"] = iv
+            r["iv_source"] = "calculada"
+    return rows
+
 # ── Parser PDF IAMC ────────────────────────────────────────────────────────────
 def _pf(v):
     if v is None: return None
@@ -824,6 +910,12 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                               ('ITM' if diff < 0 else 'OTM') if r["tipo"] == 'CALL' else
                               ('ITM' if diff > 0 else 'OTM'))
 
+    # ── Calcular IV desde último precio donde no hay IV del PDF ──
+    rows = _enrich_iv(rows)
+    iv_calc = sum(1 for r in rows if r.get("iv_source") == "calculada")
+    iv_iamc = sum(1 for r in rows if r.get("iv_source") == "iamc")
+    print(f"[parser] IV: {iv_iamc} del IAMC + {iv_calc} calculadas desde último precio")
+
     # ── Diagnóstico ──
     if mixed:
         print(f"[parser] {len(mixed)} filas reasignadas por símbolo (mezcla detectada). "
@@ -1086,8 +1178,11 @@ async def scheduler():
 @app.on_event("startup")
 async def startup():
     _pg_init()
-    global _scheduler_task
+    global _scheduler_task, _veta_ws_task
     _scheduler_task = asyncio.create_task(scheduler())
+    if VETA_COOKIE:
+        _veta_ws_task = asyncio.create_task(_veta_ws_loop())
+        print("[Veta WS] Task iniciada")
 
 # ── API endpoints ──────────────────────────────────────────────────────────────
 
@@ -1199,28 +1294,153 @@ async def get_symbol(symbol: str):
         return JSONResponse(status_code=404, content={"error": f"Symbol {symbol} no encontrado"})
     return {"fecha": state["fecha"], "data": rows[0]}
 
+VETA_BASE = "https://matriz.bcch.xoms.com.ar/api/v2"
+VETA_WS   = "wss://matriz.bcch.xoms.com.ar/ws"
+
+# ── Cache de books en memoria ─────────────────────────────────────────────────
+# { "bm_MERV_GFGC7000OC_24hs": { bid, ask, qty_bid, qty_ask, ts } }
+_veta_books: dict = {}
+_veta_ws_task = None
+_veta_session = {"id": None, "conn_id": None, "csrf": None}
+
+async def _veta_get_session() -> dict:
+    """Obtiene session_id y csrfToken desde /profile."""
+    if not VETA_COOKIE: return {}
+    try:
+        async with httpx.AsyncClient(timeout=10, verify=False) as c:
+            r = await c.get(f"{VETA_BASE}/profile",
+                params={"_ds": int(datetime.now().timestamp()*1000)},
+                headers={
+                    "Cookie": VETA_COOKIE,
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://matriz.bcch.xoms.com.ar/principal/favoritos",
+                    "Origin": "https://matriz.bcch.xoms.com.ar",
+                })
+            if r.status_code == 200:
+                data = r.json()
+                return {
+                    "csrf":    data.get("csrfToken"),
+                    "session": data.get("sessionId") or data.get("session_id"),
+                    "conn_id": data.get("connectionId") or data.get("conn_id") or str(int(datetime.now().timestamp()*1000)),
+                }
+    except Exception as e:
+        print(f"[Veta] Error obteniendo sesión: {e}")
+    return {}
+
+def _symbol_to_security_id(symbol: str) -> str:
+    """Convierte símbolo BYMA a securityId de Veta: GFGC7000OC → bm_MERV_GFGC7000OC_24hs"""
+    return f"bm_MERV_{symbol}_24hs"
+
+def _parse_book_msg(raw: str):
+    """
+    Parsea mensaje book de Veta:
+    B:securityId!seq!qty_bid|bid|ask|qty_ask!...
+    """
+    parts = raw.split('!')
+    if len(parts) < 3: return None, None
+    security_id = parts[0]
+    bids, asks = [], []
+    for linea in parts[2:]:
+        if not linea or linea == '|||': continue
+        cols = linea.split('|')
+        if len(cols) < 4: continue
+        try:
+            qb, b, a, qa = float(cols[0]), float(cols[1]), float(cols[2]), float(cols[3])
+            if not (b != b) and b > 0 and qb > 0: bids.append({"price": b, "qty": qb})
+            if not (a != a) and a > 0 and qa > 0: asks.append({"price": a, "qty": qa})
+        except: continue
+    bids.sort(key=lambda x: -x["price"])
+    asks.sort(key=lambda x:  x["price"])
+    return security_id, {"bids": bids[:5], "asks": asks[:5], "ts": datetime.now(TZ_ARG).isoformat()}
+
+def _parse_md_msg(raw: str):
+    """
+    Parsea mensaje market data:
+    M:securityId|qty_bid|?|bid|ask|qty_ask|ultimo|...
+    """
+    pipe = raw.find('|')
+    if pipe == -1: return None, None
+    security_id = raw[:pipe]
+    fields = raw[pipe+1:].split('|')
+    try:
+        qty_bid = float(fields[0]) if fields[0] else None
+        bid     = float(fields[2]) if len(fields)>2 and fields[2] else None
+        ask     = float(fields[3]) if len(fields)>3 and fields[3] else None
+        qty_ask = float(fields[4]) if len(fields)>4 and fields[4] else None
+        ultimo  = float(fields[5]) if len(fields)>5 and fields[5] else None
+        return security_id, {
+            "bid": bid, "ask": ask,
+            "qty_bid": qty_bid, "qty_ask": qty_ask,
+            "ultimo": ultimo,
+            "ts": datetime.now(TZ_ARG).isoformat()
+        }
+    except: return None, None
+
+async def _veta_ws_loop():
+    """Loop WebSocket de Veta — mantiene conexión y actualiza _veta_books."""
+    import websockets
+    while True:
+        if not VETA_COOKIE:
+            await asyncio.sleep(60)
+            continue
+        try:
+            sess = await _veta_get_session()
+            session_id = sess.get("session") or ""
+            conn_id    = sess.get("conn_id") or str(int(datetime.now().timestamp()*1000))
+            ws_url = f"{VETA_WS}?session_id={session_id}&conn_id={conn_id}" if session_id else VETA_WS
+            print(f"[Veta WS] Conectando: {ws_url[:60]}...")
+
+            async with websockets.connect(
+                ws_url,
+                extra_headers={
+                    "Cookie": VETA_COOKIE,
+                    "Origin": "https://matriz.bcch.xoms.com.ar",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                },
+                ping_interval=30,
+                ping_timeout=10,
+            ) as ws:
+                print("[Veta WS] Conectado ✅")
+                _veta_session["id"] = session_id
+                _veta_session["conn_id"] = conn_id
+
+                # Suscribir a todos los subyacentes activos
+                opciones_activas = [r["symbol"] for r in state["opciones"]
+                                    if r.get("symbol") and (r.get("volumen_ars") or 0) > 0]
+                if opciones_activas:
+                    topics = [f"book.{_symbol_to_security_id(s)}" for s in opciones_activas[:50]]
+                    msg = json.dumps({"_req": "S", "topicType": "book", "topics": topics, "replace": False})
+                    await ws.send(msg)
+                    print(f"[Veta WS] Suscrito a {len(topics)} books")
+
+                async for message in ws:
+                    if isinstance(message, bytes): message = message.decode()
+                    if message == 'pong': continue
+                    if message.startswith('B:'):
+                        sec_id, book = _parse_book_msg(message[2:])
+                        if sec_id and book: _veta_books[sec_id] = book
+                    elif message.startswith('M:'):
+                        sec_id, md = _parse_md_msg(message[2:])
+                        if sec_id and md:
+                            if sec_id not in _veta_books: _veta_books[sec_id] = {}
+                            _veta_books[sec_id].update(md)
+
+        except Exception as e:
+            print(f"[Veta WS] Error: {e}. Reconectando en 10s...")
+        await asyncio.sleep(10)
+
 @app.get("/api/opciones/orderbook/{symbol}")
 async def get_orderbook(symbol: str):
-    """
-    Bid/ask en tiempo real desde Veta (BCCH).
-    Requiere VETA_COOKIE configurada en Doppler.
-    """
+    """Bid/ask en tiempo real desde Veta WebSocket."""
     if not VETA_COOKIE:
         return JSONResponse(status_code=503, content={"error": "VETA_COOKIE no configurada"})
-    ds = int(datetime.now().timestamp() * 1000)
-    url = f"https://matriz.bcch.xoms.com.ar/api/v2/profile?symbol={symbol}&_ds={ds}"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(url, headers={
-                "Cookie": VETA_COOKIE,
-                "User-Agent": "Mozilla/5.0",
-                "Referer": "https://matriz.bcch.xoms.com.ar/",
-            })
-            if r.status_code == 200:
-                return {"symbol": symbol, "data": r.json()}
-            return JSONResponse(status_code=r.status_code, content={"error": f"Veta status {r.status_code}"})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+    sec_id = _symbol_to_security_id(symbol)
+    book = _veta_books.get(sec_id)
+    if book:
+        return {"symbol": symbol, "security_id": sec_id, "book": book}
+    # Si no está en cache, suscribir on-demand
+    return {"symbol": symbol, "security_id": sec_id, "book": None,
+            "msg": "Suscribiendo — reintentar en 2s"}
 
 @app.get("/api/opciones/iv_surface/{subyacente}")
 async def get_iv_surface(subyacente: str):
