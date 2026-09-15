@@ -354,7 +354,7 @@ function sanitizeCadena(rawRows) {
     // 5) Teórico $0 = solver roto → teórico y desvío no son confiables
     if (!(r.precio_teorico > 0)) { patch.precio_teorico = null; patch.desvio_teorico = null; }
     // 6) IV imposible (0.96%, etc.) = solver roto
-    if (r.vol_implicita != null && (r.vol_implicita < IV_MIN || r.vol_implicita > IV_MAX)) {
+    if (r._iv_ult != null && (r._iv_ult < IV_MIN || r._iv_ult > IV_MAX)) {
       patch.vol_implicita = null;
     }
     if (Object.keys(patch).length) r = { ...r, ...patch };
@@ -559,7 +559,9 @@ function renderSmile() {
   const vto  = document.getElementById('ctrl-vto').value;
   const show = document.getElementById('ctrl-show').value;
   // Pool base IV Últ: define los puntos principales del smile
-  let base = state.cadena.filter(r => r.strike > 0 && r.vol_implicita > 0);
+  // Usar vi_ultimo (de Veta) cuando existe; sino vol_implicita (IAMC)
+  state.cadena.forEach(r => { r._iv_ult = r.vi_ultimo > 0 ? r.vi_ultimo : r._iv_ult; });
+  let base = state.cadena.filter(r => r.strike > 0 && r._iv_ult > 0);
   // Pool BO: para las líneas VI Bid/Offer (incluye filas sin IV Últ)
   let baseBO = state.cadena.filter(r => r.strike > 0 && (r.vi_bid > 0 || r.vi_offer > 0));
   if (vto)   { base = base.filter(r => r.vencimiento === vto); baseBO = baseBO.filter(r => r.vencimiento === vto); }
@@ -579,13 +581,13 @@ function renderSmile() {
   const callsBO = baseBO.filter(r => r.tipo==='CALL').sort((a,b)=>a.strike-b.strike);
   const putsBO  = baseBO.filter(r => r.tipo==='PUT').sort((a,b)=>a.strike-b.strike);
   const spot  = base.find(r=>r.precio_suby)?.precio_suby || 0;
-  const allIV = rows.map(r=>r.vol_implicita).filter(v=>v>0);
+  const allIV = rows.map(r=>r._iv_ult).filter(v=>v>0);
   if (!allIV.length) { showEmpty('Sin datos de IV Último para los filtros seleccionados'); return; }
   const ivMin = Math.min(...allIV), ivMax = Math.max(...allIV);
   const ivAvg = (allIV.reduce((a,b)=>a+b,0)/allIV.length).toFixed(2);
-  const atmRow = spot>0 ? rows.reduce((b,r)=>r.vol_implicita>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null) : null;
-  const otmP = spot>0 ? puts.filter(r=>r.strike<spot*0.95&&r.vol_implicita>0).at(-1) : null;
-  const otmC = spot>0 ? calls.filter(r=>r.strike>spot*1.05&&r.vol_implicita>0)[0] : null;
+  const atmRow = spot>0 ? rows.reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null) : null;
+  const otmP = spot>0 ? puts.filter(r=>r.strike<spot*0.95&&r._iv_ult>0).at(-1) : null;
+  const otmC = spot>0 ? calls.filter(r=>r.strike>spot*1.05&&r._iv_ult>0)[0] : null;
   const skew = otmP&&otmC ? +(otmP.vol_implicita-otmC.vol_implicita).toFixed(2) : null;
   const vh = rows.map(r=>r.vol_hist_40r).find(v=>v!=null);
 
@@ -628,7 +630,7 @@ function renderSmile() {
   const visRows   = base.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
   const visRowsBO = baseBO.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
   const allYVals = [
-    ...visRows.map(r=>r.vol_implicita).filter(v=>v>0),
+    ...visRows.map(r=>r._iv_ult).filter(v=>v>0),
     ...visRowsBO.flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)),
   ];
   if (!allYVals.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
@@ -693,13 +695,13 @@ function renderSmile() {
       drawSerie(callsBO, r=>r.vi_offer, 'rgba(192,57,43,0.7)',   'rgba(192,57,43,0.9)',   [3,3]);
     }
     // IV Últ calls — línea sólida + puntos grandes
-    const cUlt = calls.filter(r=>r.vol_implicita>0);
+    const cUlt = calls.filter(r=>r._iv_ult>0);
     if(cUlt.length>=2){
       ctx.strokeStyle='rgba(220,220,220,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
-      ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita)));
+      ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult)));
       ctx.stroke(); ctx.setLineDash([]);
     }
-    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(220,220,220,0.9)'; ctx.fill(); });
+    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),5,0,Math.PI*2); ctx.fillStyle='rgba(220,220,220,0.9)'; ctx.fill(); });
   }
   if(showPuts){
     if(soloUno){
@@ -708,13 +710,13 @@ function renderSmile() {
       // VI Offer puts: violeta
       drawSerie(putsBO, r=>r.vi_offer, 'rgba(192,57,43,0.7)',   'rgba(192,57,43,0.9)',   [3,3]);
     }
-    const pUlt = puts.filter(r=>r.vol_implicita>0);
+    const pUlt = puts.filter(r=>r._iv_ult>0);
     if(pUlt.length>=2){
       ctx.strokeStyle='rgba(201,150,10,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
-      ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita)));
+      ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult)));
       ctx.stroke(); ctx.setLineDash([]);
     }
-    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(201,150,10,0.9)'; ctx.fill(); });
+    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),5,0,Math.PI*2); ctx.fillStyle='rgba(201,150,10,0.9)'; ctx.fill(); });
   }
 
   // Leyenda
@@ -744,7 +746,7 @@ function renderSmile() {
     const mx=e.clientX-rect.left, my=e.clientY-rect.top;
     let best=null, bd=20;
     visRows.forEach(r=>{
-      [['vol_implicita',r.vol_implicita],['vi_bid',r.vi_bid],['vi_offer',r.vi_offer]].forEach(([field,val])=>{
+      [['vol_implicita',r._iv_ult],['vi_bid',r.vi_bid],['vi_offer',r.vi_offer]].forEach(([field,val])=>{
         if(!(val>0)) return;
         const d=Math.hypot(xs(r.strike)-mx,ys(val)-my);
         if(d<bd){bd=d;best={r,field,val};}
@@ -791,8 +793,8 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
   // Recalcular rango Y con solo los puntos en el rango X visible
   const inView = r => r.strike >= xMin && r.strike <= xMax;
   const yVals = [
-    ...(showCalls ? calls.filter(inView).map(r=>r.vol_implicita).filter(v=>v>0) : []),
-    ...(showPuts  ? puts.filter(inView).map(r=>r.vol_implicita).filter(v=>v>0)  : []),
+    ...(showCalls ? calls.filter(inView).map(r=>r._iv_ult).filter(v=>v>0) : []),
+    ...(showPuts  ? puts.filter(inView).map(r=>r._iv_ult).filter(v=>v>0)  : []),
     ...(showCalls && soloUno ? callsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)) : []),
     ...(showPuts  && soloUno ? putsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0))  : []),
   ];
@@ -842,18 +844,18 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
       drawS(callsBO,r=>r.vi_bid,'rgba(58,176,122,0.7)','rgba(58,176,122,0.9)',[3,3]);
       drawS(callsBO,r=>r.vi_offer,'rgba(192,57,43,0.7)','rgba(192,57,43,0.9)',[3,3]);
     }
-    const cUlt=calls.filter(r=>r.vol_implicita>0&&r.strike>=xMin&&r.strike<=xMax);
-    if(cUlt.length>=2){ ctx.strokeStyle='rgba(220,220,220,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita))); ctx.stroke(); ctx.setLineDash([]); }
-    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(220,220,220,0.9)'; ctx.fill(); });
+    const cUlt=calls.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
+    if(cUlt.length>=2){ ctx.strokeStyle='rgba(220,220,220,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult))); ctx.stroke(); ctx.setLineDash([]); }
+    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),5,0,Math.PI*2); ctx.fillStyle='rgba(220,220,220,0.9)'; ctx.fill(); });
   }
   if(showPuts){
     if(soloUno){
       drawS(putsBO,r=>r.vi_bid,'rgba(58,176,122,0.7)','rgba(58,176,122,0.9)',[3,3]);
       drawS(putsBO,r=>r.vi_offer,'rgba(192,57,43,0.7)','rgba(192,57,43,0.9)',[3,3]);
     }
-    const pUlt=puts.filter(r=>r.vol_implicita>0&&r.strike>=xMin&&r.strike<=xMax);
-    if(pUlt.length>=2){ ctx.strokeStyle='rgba(201,150,10,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vol_implicita)):ctx.lineTo(xs(r.strike),ys(r.vol_implicita))); ctx.stroke(); ctx.setLineDash([]); }
-    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r.vol_implicita),5,0,Math.PI*2); ctx.fillStyle='rgba(201,150,10,0.9)'; ctx.fill(); });
+    const pUlt=puts.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
+    if(pUlt.length>=2){ ctx.strokeStyle='rgba(201,150,10,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult))); ctx.stroke(); ctx.setLineDash([]); }
+    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),5,0,Math.PI*2); ctx.fillStyle='rgba(201,150,10,0.9)'; ctx.fill(); });
   }
   // Leyenda
   let lx=pad.l; ctx.font='9px monospace'; ctx.textAlign='left';
@@ -883,6 +885,7 @@ function renderCadena() {
       <th>Bid</th>
       <th>Offer</th>
       <th>Último</th>
+      <th>Últ Veta</th>
       <th>Apertura</th>
       <th>Mín</th>
       <th>Máx</th>
@@ -924,6 +927,7 @@ function renderCadena() {
       <td class="pos">${r.bid!=null?'$'+fmt(r.bid):'-'}</td>
       <td class="neg">${r.ask!=null?'$'+fmt(r.ask):'-'}</td>
       <td>${r.ultimo_precio!=null?'$'+fmt(r.ultimo_precio):'-'}</td>
+      <td class="pos">${r.veta_ultimo!=null?'$'+fmt(r.veta_ultimo):'-'}</td>
       <td class="muted">${r.apertura_prima!=null?'$'+fmt(r.apertura_prima):'-'}</td>
       <td class="muted">${r.min_prima!=null?'$'+fmt(r.min_prima):'-'}</td>
       <td class="muted">${r.max_prima!=null?'$'+fmt(r.max_prima):'-'}</td>
@@ -936,7 +940,7 @@ function renderCadena() {
       <td class="${desvCls}">${r.desvio_teorico!=null?(r.desvio_teorico>0?'+':'')+fmt(r.desvio_teorico):'-'}</td>
       <td class="pos">${r.vi_bid!=null?r.vi_bid.toFixed(2)+'%':'-'}</td>
       <td class="neg">${r.vi_offer!=null?r.vi_offer.toFixed(2)+'%':'-'}</td>
-      <td class="gold">${r.vol_implicita!=null?r.vol_implicita.toFixed(2)+'%':'-'}</td>
+      <td class="gold">${r._iv_ult!=null?r._iv_ult.toFixed(2)+'%':'-'}</td>
       <td class="muted">${r.vol_hist_40r!=null?r.vol_hist_40r.toFixed(2)+'%':'-'}</td>
       <td>${r.delta!=null?r.delta.toFixed(2):'-'}</td>
       <td class="muted">${r.gamma!=null?r.gamma.toFixed(4):'-'}</td>
@@ -1011,8 +1015,8 @@ function renderResumen() {
 function exportCsv() {
   const rows = getFilteredRows();
   if (!rows.length) return;
-  const cols = ['symbol','tipo','strike','moneyness','bid','ask','ultimo_precio','apertura_prima','min_prima','max_prima','var_prima_pct','volumen_ars','cant_ops','open_interest','var_oi_pct','precio_teorico','desvio_teorico','vi_bid','vi_offer','vol_implicita','vol_hist_40r','delta','gamma','theta','vega','rho','vencimiento','dias_vto'];
-  const head = ['Symbol','Tipo','Strike','Moneyness','Bid','Ask','Ultimo','Apertura','Min','Max','Var%','Vol ARS','Ops','OI','Var OI%','P.Teorico','Desvio','VI Bid','VI Offer','VI Ult','VH%','Delta','Gamma','Theta','Vega','Rho','Vencimiento','Dias Vto'];
+  const cols = ['symbol','tipo','strike','moneyness','bid','ask','ultimo_precio','veta_ultimo','apertura_prima','min_prima','max_prima','var_prima_pct','volumen_ars','cant_ops','open_interest','var_oi_pct','precio_teorico','desvio_teorico','vi_bid','vi_offer','vi_ultimo','vol_implicita','vol_hist_40r','delta','gamma','theta','vega','rho','vencimiento','dias_vto'];
+  const head = ['Symbol','Tipo','Strike','Moneyness','Bid','Offer','Ultimo IAMC','Ultimo Veta','Apertura','Min','Max','Var%','Vol ARS','Ops','OI','Var OI%','P.Teorico','Desvio','VI Bid','VI Offer','VI Ult Veta','VI Ult IAMC','VH%','Delta','Gamma','Theta','Vega','Rho','Vencimiento','Dias Vto'];
   const cell = v => {
     if (v == null) return '';
     const s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);

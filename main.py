@@ -1290,13 +1290,21 @@ async def get_cadena(
             r_rate = TASA_VTO.get(vto, 0.2316)
             if S and K and dias and dias > 0:
                 T = dias / 365.0
-                if bid:   row["vi_bid"]   = _calc_iv(bid,   S, K, T, r_rate, tipo_op)
-                if ask:   row["vi_offer"] = _calc_iv(ask,   S, K, T, r_rate, tipo_op)
+                if bid:    row["vi_bid"]    = _calc_iv(bid,    S, K, T, r_rate, tipo_op)
+                if ask:    row["vi_offer"]  = _calc_iv(ask,    S, K, T, r_rate, tipo_op)
+                veta_ult = book.get("ultimo")
+                if veta_ult:
+                    row["veta_ultimo"] = veta_ult
+                    row["vi_ultimo"]   = _calc_iv(veta_ult, S, K, T, r_rate, tipo_op)
+                else:
+                    row["veta_ultimo"] = None
+                    row["vi_ultimo"]   = None
         else:
             row["bid"] = row["ask"] = row["qty_bid"] = row["qty_ask"] = row["book_ts"] = None
             row["vi_bid"] = row["vi_offer"] = None
+            row["veta_ultimo"] = None
+            row["vi_ultimo"]   = None
 
-        # vi_ultimo ya viene del parser o _enrich_iv
         result.append(row)
 
     return {"fecha": state["fecha"], "total": len(result), "data": result}
@@ -1402,23 +1410,29 @@ def _parse_book_msg(raw: str):
 
 def _parse_md_msg(raw: str):
     """
-    Parsea mensaje market data:
-    M:securityId|qty_bid|?|bid|ask|qty_ask|ultimo|...
+    Parsea mensaje market data de Veta:
+    M:securityId|seq|qty_bid|bid|ask|qty_ask|lst|datetime|...|vol|von|...
+    fields[0]=seq, [1]=qty_bid, [2]=bid, [3]=ask, [4]=qty_ask,
+    [5]=lst (último operado), [6]=datetime, [9]=vol_ars, [10]=von (cant_ops)
     """
     pipe = raw.find('|')
     if pipe == -1: return None, None
     security_id = raw[:pipe]
     fields = raw[pipe+1:].split('|')
     try:
-        qty_bid = float(fields[0]) if fields[0] else None
+        qty_bid = float(fields[1]) if len(fields)>1 and fields[1] else None
         bid     = float(fields[2]) if len(fields)>2 and fields[2] else None
         ask     = float(fields[3]) if len(fields)>3 and fields[3] else None
         qty_ask = float(fields[4]) if len(fields)>4 and fields[4] else None
         ultimo  = float(fields[5]) if len(fields)>5 and fields[5] else None
+        vol     = float(fields[9]) if len(fields)>9 and fields[9] else None
+        von     = float(fields[10]) if len(fields)>10 and fields[10] else None
         return security_id, {
             "bid": bid, "ask": ask,
             "qty_bid": qty_bid, "qty_ask": qty_ask,
             "ultimo": ultimo,
+            "vol_ars": vol,
+            "cant_ops": int(von) if von else None,
             "ts": datetime.now(TZ_ARG).isoformat()
         }
     except: return None, None
