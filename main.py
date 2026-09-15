@@ -579,12 +579,49 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
         70: "rho",
     }
 
+    # COL_MAP para 76 columnas (YPFD puts/calls diciembre, algunos subyacentes)
+    # Diferencia con 78: faltan 2 cols en algún punto medio
+    # Del debug: col 14=apertura, col 17=min, col 20=max, col 23=ultimo, col 26=var%
+    # col 29=hora, col 32=vol, col 34=ops, col 37=OI, col 40=varOI
+    # col 43=teorico, col 46=desvio, col 49=valor_temp, col 52=VH, col 55=IV
+    # col 58=delta, col 61=gamma, col 64=theta, col 67=vega, col 70=rho
+    COL_MAP_76 = {
+        0:  "symbol",
+        3:  "strike",
+        6:  "distancia_itm_otm",
+        8:  "moneyness",
+        11: "precio_suby",
+        14: "apertura_prima",
+        17: "min_prima",
+        20: "max_prima",
+        23: "ultimo_precio",
+        26: "var_prima_pct",
+        29: "hora_ultimo",
+        32: "volumen_ars",
+        34: "cant_ops",
+        37: "open_interest",
+        40: "var_oi_pct",
+        43: "precio_teorico",
+        46: "desvio_teorico",
+        49: "valor_temporal",
+        52: "vol_hist_40r",
+        55: "vol_implicita",
+        58: "delta",
+        61: "gamma",
+        64: "theta",
+        67: "vega",
+        70: "rho",
+    }
+
     def get_col_map(ncols):
         if ncols >= 80:
             print(f"  [parser] usando COL_MAP_81 para tabla con {ncols} cols")
             return COL_MAP_81
-        if ncols >= 75:
+        if ncols >= 77:
             return COL_MAP_78
+        if ncols >= 74:
+            print(f"  [parser] usando COL_MAP_76 para tabla con {ncols} cols")
+            return COL_MAP_76
         print(f"  [parser] usando COL_MAP_73 para tabla con {ncols} cols")
         return COL_MAP_73
 
