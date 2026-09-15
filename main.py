@@ -492,7 +492,8 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
     resumen_pc, resumen_pc_oi = {}, {}
     fecha_str = None
 
-    COL_MAP = {
+    # COL_MAP base (78 columnas — GGAL/COME/etc.)
+    COL_MAP_78 = {
         0:  "symbol",
         3:  "strike",
         6:  "distancia_itm_otm",
@@ -519,6 +520,69 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
         72: "vega",
         75: "rho",
     }
+    # COL_MAP para 81 columnas (YPFD/ALUA — 2 nulls extra en pos 15-16 y 30-31)
+    COL_MAP_81 = {
+        0:  "symbol",
+        3:  "strike",
+        6:  "distancia_itm_otm",
+        8:  "moneyness",
+        11: "precio_suby",
+        14: "apertura_prima",
+        21: "min_prima",   # +2
+        24: "max_prima",   # +2
+        27: "ultimo_precio",# +2
+        30: "var_prima_pct",# +2
+        35: "hora_ultimo",  # +2
+        38: "volumen_ars",  # +2
+        41: "cant_ops",     # +2
+        44: "open_interest",# +2
+        47: "var_oi_pct",   # +2
+        50: "precio_teorico",# +2
+        53: "desvio_teorico",# +2
+        56: "valor_temporal",# +2
+        59: "vol_hist_40r", # +2
+        62: "vol_implicita",# +2
+        65: "delta",        # +2
+        68: "gamma",        # +2
+        71: "theta",        # +2
+        74: "vega",         # +2
+        77: "rho",          # +2
+    }
+    # COL_MAP para 73 columnas (BBAR y subyacentes con menos cols)
+    COL_MAP_73 = {
+        0:  "symbol",
+        3:  "strike",
+        6:  "distancia_itm_otm",
+        8:  "moneyness",
+        11: "precio_suby",
+        14: "apertura_prima",
+        17: "min_prima",
+        20: "max_prima",
+        23: "ultimo_precio",
+        26: "var_prima_pct",
+        29: "hora_ultimo",
+        32: "volumen_ars",
+        34: "cant_ops",
+        37: "open_interest",
+        40: "var_oi_pct",
+        43: "precio_teorico",
+        46: "desvio_teorico",
+        49: "valor_temporal",
+        52: "vol_hist_40r",
+        55: "vol_implicita",
+        58: "delta",
+        61: "gamma",
+        64: "theta",
+        67: "vega",
+        70: "rho",
+    }
+
+    def get_col_map(ncols):
+        if ncols >= 80:   return COL_MAP_81
+        if ncols >= 75:   return COL_MAP_78
+        return COL_MAP_73
+
+    COL_MAP = COL_MAP_78  # default, se sobreescribe por tabla
     STR_FIELDS  = {"symbol", "moneyness", "hora_ultimo", "distancia_itm_otm"}
     INT_FIELDS  = {"cant_ops", "open_interest"}
 
@@ -646,7 +710,8 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                                         "vencimiento": vto, "strike": strike,
                                         "tasa_libre": current_tasa, "dias_vto": current_dias}
 
-                            for col_idx, field in COL_MAP.items():
+                            col_map = get_col_map(len(row))
+                            for col_idx, field in col_map.items():
                                 if field in ("symbol", "strike"): continue
                                 val = row[col_idx] if col_idx < len(row) else None
                                 val = str(val).strip() if val is not None else None
