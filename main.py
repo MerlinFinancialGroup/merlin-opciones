@@ -1556,22 +1556,34 @@ async def _veta_ws_loop():
                     msg_count += 1
                     if msg_count <= 5:
                         print(f"[Veta WS] msg sample #{msg_count}: {message[:120]}")
-                    if message.startswith('B:'):
-                        sec_id, book = _parse_book_msg(message[2:])
-                        if sec_id and book: _veta_books[sec_id] = book
-                    elif message.startswith('M:'):
-                        sec_id, md = _parse_md_msg(message[2:])
-                        if sec_id and md:
-                            if sec_id not in _veta_books: _veta_books[sec_id] = {}
-                            _veta_books[sec_id].update(md)
-                            clean_id = sec_id.replace('md.', '')
-                            if clean_id != sec_id:
-                                if clean_id not in _veta_books: _veta_books[clean_id] = {}
-                                _veta_books[clean_id].update(md)
-                        msg_count += 1
-                        # Persistir en PG cada 200 mensajes
-                        if msg_count % 200 == 0:
-                            _pg_save_veta_books()
+
+                    # Los mensajes pueden venir como array JSON o como string directo
+                    raw_msgs = []
+                    stripped = message.strip()
+                    if stripped.startswith('['):
+                        try:
+                            arr = json.loads(stripped)
+                            raw_msgs = arr if isinstance(arr, list) else [stripped]
+                        except: raw_msgs = [stripped]
+                    elif stripped.startswith('{'):
+                        pass  # mensaje de control, ignorar
+                    else:
+                        raw_msgs = [stripped]
+
+                    for raw in raw_msgs:
+                        if not isinstance(raw, str): continue
+                        if raw.startswith('B:'):
+                            sec_id, book = _parse_book_msg(raw[2:])
+                            if sec_id and book: _veta_books[sec_id] = book
+                        elif raw.startswith('M:'):
+                            sec_id, md = _parse_md_msg(raw[2:])
+                            if sec_id and md:
+                                if sec_id not in _veta_books: _veta_books[sec_id] = {}
+                                _veta_books[sec_id].update(md)
+
+                    # Persistir en PG cada 200 mensajes
+                    if msg_count % 200 == 0:
+                        _pg_save_veta_books()
 
         except Exception as e:
             print(f"[Veta WS] Error: {e}. Reconectando en 10s...")
