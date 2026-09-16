@@ -790,6 +790,41 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
   const yMax = yRawMax + yPadDyn;
   const xs = s => pad.l + (xMax===xMin ? cW/2 : (s-xMin)/(xMax-xMin)*cW);
   const ys = v => pad.t + cH - (yMax===yMin ? cH/2 : (v-yMin)/(yMax-yMin)*cH);
+
+  // ── Bandas gaussianas ──
+  const atmRowG = [...calls,...puts].reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null);
+  const ivAtmG  = atmRowG ? atmRowG._iv_ult/100 : null;
+  const vhArr   = [...calls,...puts].map(r=>r.vol_hist_40r).filter(v=>v>0);
+  const vhFrac  = vhArr.length ? vhArr[0]/100 : null;
+  const T_years = ([...calls,...puts][0]?.dias_vto||16)/365;
+
+  function drawGaussBand(vol, fillCol) {
+    if(!vol || !spot || spot<=0) return;
+    const sqrtT = Math.sqrt(T_years);
+    const kLow  = spot * Math.exp(-2 * vol * sqrtT);
+    const kHigh = spot * Math.exp( 2 * vol * sqrtT);
+    const xL = xs(Math.max(kLow,  xMin));
+    const xR = xs(Math.min(kHigh, xMax));
+    if(xR <= xL) return;
+    ctx.fillStyle = fillCol;
+    ctx.fillRect(xL, pad.t, xR-xL, cH);
+    // Líneas ±1σ
+    const k1L = spot * Math.exp(-vol * sqrtT);
+    const k1R = spot * Math.exp( vol * sqrtT);
+    const baseAlpha = parseFloat(fillCol.match(/[\d.]+\)$/)[0]);
+    const borderCol = fillCol.replace(/[\d.]+\)$/, (baseAlpha*5).toFixed(2)+')');
+    ctx.strokeStyle = borderCol; ctx.lineWidth = 0.5; ctx.setLineDash([3,3]);
+    [k1L, k1R].forEach(k => {
+      if(k>=xMin && k<=xMax){
+        ctx.beginPath(); ctx.moveTo(xs(k), pad.t); ctx.lineTo(xs(k), pad.t+cH); ctx.stroke();
+      }
+    });
+    ctx.setLineDash([]);
+  }
+
+  if(vhFrac)  drawGaussBand(vhFrac,  'rgba(160,160,160,0.06)');
+  if(ivAtmG)  drawGaussBand(ivAtmG,  'rgba(201,150,10,0.08)');
+
   // Grid Y
   for(let i=0;i<=5;i++){
     const v=yMin+(yMax-yMin)*i/5, y=ys(v);
