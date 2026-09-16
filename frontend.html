@@ -806,7 +806,7 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     const kFrom = Math.max(xMin, spot - 3.5*sigma);
     const kTo   = Math.min(xMax, spot + 3.5*sigma);
     if(kTo <= kFrom) return;
-    const bellH = cH * 0.22;
+    const bellH = cH * 0.92;
     const base  = pad.t + cH;
     const pts = [];
     for(let i=0; i<=nPts; i++){
@@ -842,8 +842,7 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     });
   }
 
-  if(vhFrac)  drawGaussBell(vhFrac,  'rgba(160,160,160,0.5)', 'rgba(160,160,160,0.06)');
-  if(ivAtmG)  drawGaussBell(ivAtmG,  'rgba(201,150,10,0.5)',  'rgba(201,150,10,0.07)');
+  if(ivAtmG)  drawGaussBell(ivAtmG,  'rgba(201,150,10,0.4)',  'rgba(201,150,10,0.05)');
 
 
   // Grid Y
