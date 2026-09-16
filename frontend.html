@@ -929,7 +929,7 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     cUlt.forEach(r=>{
       const x=xs(r.strike),y=ys(r._iv_ult);
       // Punto exterior: blanco si Veta, lila si IAMC
-      const cUltCol = r.vi_ultimo>0 ? 'rgba(220,220,220,0.9)' : 'rgba(180,130,255,0.9)';
+      const cUltCol = r.vi_ultimo>0 ? 'rgba(220,220,220,0.9)' : r.iv_source==='teorico' ? 'rgba(140,140,140,0.5)' : 'rgba(180,130,255,0.9)';
       ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fillStyle=cUltCol;ctx.fill();
       // Punto interior: color BO si coincide (±0.5%), sino blanco pequeño
       const boRow=callsBO.find(b=>b.strike===r.strike);
@@ -947,7 +947,7 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     pUlt.forEach(r=>{
       const x=xs(r.strike),y=ys(r._iv_ult);
       // Punto exterior: amarillo si Veta, naranja claro si IAMC
-      const pUltCol = r.vi_ultimo>0 ? 'rgba(220,220,0,0.95)' : 'rgba(255,160,50,0.9)';
+      const pUltCol = r.vi_ultimo>0 ? 'rgba(220,220,0,0.95)' : r.iv_source==='teorico' ? 'rgba(140,140,140,0.5)' : 'rgba(255,160,50,0.9)';
       ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fillStyle=pUltCol;ctx.fill();
       const boRow=putsBO.find(b=>b.strike===r.strike);
       let innerCol='rgba(150,110,5,0.6)';

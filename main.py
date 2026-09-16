@@ -440,41 +440,74 @@ def _calc_iv(precio_mercado, S, K, T, r, tipo, tol=1e-5, max_iter=100):
 
 def _enrich_iv(rows: list) -> list:
     """
-    Para filas sin IV del PDF, calcula IV desde el último precio operado.
-    Usa tasa_libre del PDF (en %) convertida a continua, T en años ACT/365.
+    Para filas sin IV del PDF:
+    1. Intenta calcular IV desde el último precio operado.
+    2. Si no hay último precio, calcula el precio teórico BS usando la VH 40r
+       (o la IV ATM del subyacente como fallback) y lo asigna como precio_teorico.
+       La vol_implicita en ese caso será la VH usada (precio teórico = smile plano).
     """
-    # Tasas por vencimiento del PDF (fallback si tasa_libre es null)
     TASA_VTO = {
-        "2026-10-16": 0.2316,  # 23.16% octubre
-        "2026-12-18": 0.2418,  # 24.18% diciembre
+        "2026-10-16": 0.2316,
+        "2026-12-18": 0.2418,
     }
+
+    # Pre-calcular IV ATM por subyacente (para usar como fallback de sigma)
+    iv_atm_by_suby = {}
     for r in rows:
-        # Solo si no tiene IV del PDF
+        iv = r.get("vol_implicita")
+        S  = r.get("precio_suby")
+        K  = r.get("strike")
+        sub = r.get("subyacente","")
+        if iv and iv > 0 and S and K and abs(K - S) / S < 0.05:
+            if sub not in iv_atm_by_suby:
+                iv_atm_by_suby[sub] = iv
+
+    for r in rows:
         if r.get("vol_implicita") is not None:
             r["iv_source"] = "iamc"
             continue
-        # Solo si tiene último precio
-        ultimo = r.get("ultimo_precio")
-        if not ultimo or ultimo <= 0:
-            r["iv_source"] = None
-            continue
+
         S     = r.get("precio_suby")
         K     = r.get("strike")
         dias  = r.get("dias_vto")
         tipo  = r.get("tipo")
         vto   = r.get("vencimiento")
-        # Tasa: del PDF o fallback por vencimiento
+        sub   = r.get("subyacente", "")
         tasa_pct = r.get("tasa_libre")
-        if tasa_pct:
-            r_rate = tasa_pct / 100
-        else:
-            r_rate = TASA_VTO.get(vto, 0.2316)
-        if not dias or dias <= 0: continue
+        r_rate = (tasa_pct / 100) if tasa_pct else TASA_VTO.get(vto, 0.2316)
+
+        if not S or S <= 0 or not K or K <= 0 or not dias or dias <= 0:
+            r["iv_source"] = None
+            continue
+
         T = dias / 365.0
-        iv = _calc_iv(ultimo, S, K, T, r_rate, tipo)
-        if iv is not None:
-            r["vol_implicita"] = iv
-            r["iv_source"] = "calculada"
+        ultimo = r.get("ultimo_precio")
+
+        # 1) IV desde último operado
+        if ultimo and ultimo > 0:
+            iv = _calc_iv(ultimo, S, K, T, r_rate, tipo)
+            if iv is not None:
+                r["vol_implicita"] = iv
+                r["iv_source"] = "calculada"
+                continue
+
+        # 2) Sin precio operado: calcular teórico con sigma = VH 40r o IV ATM
+        vh = r.get("vol_hist_40r")
+        sigma = None
+        if vh and vh > 0:
+            sigma = vh / 100
+        elif sub in iv_atm_by_suby:
+            sigma = iv_atm_by_suby[sub] / 100
+
+        if sigma:
+            teorico = _bs_price(S, K, T, r_rate, sigma, tipo)
+            if teorico and teorico > 0:
+                if not r.get("precio_teorico"):
+                    r["precio_teorico"] = round(teorico, 4)
+                # IV implícita del teórico = sigma usado (por construcción)
+                r["vol_implicita"] = round(sigma * 100, 4)
+                r["iv_source"] = "teorico"
+
     return rows
 
 # ── Parser PDF IAMC ────────────────────────────────────────────────────────────
