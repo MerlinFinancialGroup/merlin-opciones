@@ -1378,7 +1378,8 @@ async def get_cadena(
                 T = dias / 365.0
                 if bid:    row["vi_bid"]    = _calc_iv(bid,    S, K, T, r_rate, tipo_op)
                 if ask:    row["vi_offer"]  = _calc_iv(ask,    S, K, T, r_rate, tipo_op)
-                veta_ult = book.get("ultimo")
+                # Último operado: primero de _veta_md, luego de _veta_books
+                veta_ult = (md_snap.get("ultimo") if md_snap else None) or (book.get("ultimo") if book else None)
                 if veta_ult:
                     row["veta_ultimo"] = veta_ult
                     row["vi_ultimo"]   = _calc_iv(veta_ult, S, K, T, r_rate, tipo_op)
