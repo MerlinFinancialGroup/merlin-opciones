@@ -1472,8 +1472,8 @@ def _parse_veta_m(raw_after_prefix: str):
         "symbol":      _norm_veta_sym(security_id),
         "security_id": security_id,
         "bid":         _pf(f[2]) if len(f)>2 else None,
-        "ask":         _pf(f[4]) if len(f)>4 else None,
-        "ultimo":      _pf(f[13]) if len(f)>13 and f[13] else (_pf(f[2]) if len(f)>2 else None),
+        "ask":         _pf(f[3]) if len(f)>3 else None,
+        "ultimo":      _pf(f[14]) if len(f)>14 and f[14] else None,
     }
 
 def _dispatch_veta(item: str):
