@@ -1333,6 +1333,12 @@ async def get_cadena(
     # Enriquecer con bid/ask y VI de Veta si hay books disponibles
     TASA_VTO = {"2026-10-16": 0.2316, "2026-12-18": 0.2418}
     result = []
+    # Debug: loguear estado de _veta_books
+    if _veta_books:
+        sample_key = next(iter(_veta_books))
+        print(f"[get_cadena] _veta_books tiene {len(_veta_books)} entries. Sample: {sample_key} → {_veta_books[sample_key]}")
+    else:
+        print(f"[get_cadena] _veta_books VACÍO")
     for r in rows:
         row = dict(r)
         sec_id = _symbol_to_security_id(row.get("symbol",""))
