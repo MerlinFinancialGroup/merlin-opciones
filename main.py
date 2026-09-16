@@ -49,6 +49,11 @@ def _pg_init():
     try:
         conn = _pg_conn(); cur = conn.cursor()
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS veta_books (
+                security_id TEXT PRIMARY KEY,
+                data JSONB,
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
             CREATE TABLE IF NOT EXISTS iamc_opciones_pdf (
                 id INTEGER PRIMARY KEY DEFAULT 1,
                 pdf_bytes BYTEA,
@@ -135,6 +140,36 @@ def _pg_save_opciones(rows: list, fecha: str):
         print(f"Opciones guardadas en PG: {len(rows)} filas, fecha {fecha}")
     except Exception as e:
         print(f"PG save opciones error: {e}")
+
+def _pg_save_veta_books():
+    """Persiste _veta_books en PG para sobrevivir reinicios."""
+    if not HAS_PG or not DATABASE_URL or not _veta_books: return
+    try:
+        conn = _pg_conn(); cur = conn.cursor()
+        for sec_id, data in _veta_books.items():
+            cur.execute("""
+                INSERT INTO veta_books (security_id, data, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (security_id) DO UPDATE
+                SET data = EXCLUDED.data, updated_at = NOW()
+            """, (sec_id, json.dumps(data)))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print(f"PG save veta_books error: {e}")
+
+def _pg_load_veta_books():
+    """Restaura _veta_books desde PG al arrancar."""
+    if not HAS_PG or not DATABASE_URL: return
+    try:
+        conn = _pg_conn(); cur = conn.cursor()
+        cur.execute("SELECT security_id, data FROM veta_books")
+        rows = cur.fetchall()
+        for sec_id, data in rows:
+            _veta_books[sec_id] = data if isinstance(data, dict) else json.loads(data)
+        cur.close(); conn.close()
+        if rows: print(f"[PG] Restaurados {len(rows)} veta_books")
+    except Exception as e:
+        print(f"PG load veta_books error: {e}")
 
 def _pg_load_latest():
     if not HAS_PG or not DATABASE_URL: return None, None
@@ -405,41 +440,74 @@ def _calc_iv(precio_mercado, S, K, T, r, tipo, tol=1e-5, max_iter=100):
 
 def _enrich_iv(rows: list) -> list:
     """
-    Para filas sin IV del PDF, calcula IV desde el último precio operado.
-    Usa tasa_libre del PDF (en %) convertida a continua, T en años ACT/365.
+    Para filas sin IV del PDF:
+    1. Intenta calcular IV desde el último precio operado.
+    2. Si no hay último precio, calcula el precio teórico BS usando la VH 40r
+       (o la IV ATM del subyacente como fallback) y lo asigna como precio_teorico.
+       La vol_implicita en ese caso será la VH usada (precio teórico = smile plano).
     """
-    # Tasas por vencimiento del PDF (fallback si tasa_libre es null)
     TASA_VTO = {
-        "2026-10-16": 0.2316,  # 23.16% octubre
-        "2026-12-18": 0.2418,  # 24.18% diciembre
+        "2026-10-16": 0.2316,
+        "2026-12-18": 0.2418,
     }
+
+    # Pre-calcular IV ATM por subyacente (para usar como fallback de sigma)
+    iv_atm_by_suby = {}
     for r in rows:
-        # Solo si no tiene IV del PDF
+        iv = r.get("vol_implicita")
+        S  = r.get("precio_suby")
+        K  = r.get("strike")
+        sub = r.get("subyacente","")
+        if iv and iv > 0 and S and K and abs(K - S) / S < 0.05:
+            if sub not in iv_atm_by_suby:
+                iv_atm_by_suby[sub] = iv
+
+    for r in rows:
         if r.get("vol_implicita") is not None:
             r["iv_source"] = "iamc"
             continue
-        # Solo si tiene último precio
-        ultimo = r.get("ultimo_precio")
-        if not ultimo or ultimo <= 0:
-            r["iv_source"] = None
-            continue
+
         S     = r.get("precio_suby")
         K     = r.get("strike")
         dias  = r.get("dias_vto")
         tipo  = r.get("tipo")
         vto   = r.get("vencimiento")
-        # Tasa: del PDF o fallback por vencimiento
+        sub   = r.get("subyacente", "")
         tasa_pct = r.get("tasa_libre")
-        if tasa_pct:
-            r_rate = tasa_pct / 100
-        else:
-            r_rate = TASA_VTO.get(vto, 0.2316)
-        if not dias or dias <= 0: continue
+        r_rate = (tasa_pct / 100) if tasa_pct else TASA_VTO.get(vto, 0.2316)
+
+        if not S or S <= 0 or not K or K <= 0 or not dias or dias <= 0:
+            r["iv_source"] = None
+            continue
+
         T = dias / 365.0
-        iv = _calc_iv(ultimo, S, K, T, r_rate, tipo)
-        if iv is not None:
-            r["vol_implicita"] = iv
-            r["iv_source"] = "calculada"
+        ultimo = r.get("ultimo_precio")
+
+        # 1) IV desde último operado
+        if ultimo and ultimo > 0:
+            iv = _calc_iv(ultimo, S, K, T, r_rate, tipo)
+            if iv is not None:
+                r["vol_implicita"] = iv
+                r["iv_source"] = "calculada"
+                continue
+
+        # 2) Sin precio operado: calcular teórico con sigma = VH 40r o IV ATM
+        vh = r.get("vol_hist_40r")
+        sigma = None
+        if vh and vh > 0:
+            sigma = vh / 100
+        elif sub in iv_atm_by_suby:
+            sigma = iv_atm_by_suby[sub] / 100
+
+        if sigma:
+            teorico = _bs_price(S, K, T, r_rate, sigma, tipo)
+            if teorico and teorico > 0:
+                if not r.get("precio_teorico"):
+                    r["precio_teorico"] = round(teorico, 4)
+                # IV implícita del teórico = sigma usado (por construcción)
+                r["vol_implicita"] = round(sigma * 100, 4)
+                r["iv_source"] = "teorico"
+
     return rows
 
 # ── Parser PDF IAMC ────────────────────────────────────────────────────────────
@@ -1151,6 +1219,8 @@ async def scheduler():
         print(f"Cargado desde PG: {len(rows)} opciones, fecha {fecha} — stats: {_stats_rows(rows)}")
     else:
         await descargar_iamc_pdf()
+    # Restaurar último estado de Veta desde PG
+    _pg_load_veta_books()
 
     while True:
         now = datetime.now(TZ_ARG)
@@ -1263,6 +1333,12 @@ async def get_cadena(
     # Enriquecer con bid/ask y VI de Veta si hay books disponibles
     TASA_VTO = {"2026-10-16": 0.2316, "2026-12-18": 0.2418}
     result = []
+    # Debug: loguear estado de _veta_books
+    if _veta_books:
+        sample_key = next(iter(_veta_books))
+        print(f"[get_cadena] _veta_books tiene {len(_veta_books)} entries. Sample: {sample_key} → {_veta_books[sample_key]}")
+    else:
+        print(f"[get_cadena] _veta_books VACÍO")
     for r in rows:
         row = dict(r)
         sec_id = _symbol_to_security_id(row.get("symbol",""))
@@ -1290,13 +1366,21 @@ async def get_cadena(
             r_rate = TASA_VTO.get(vto, 0.2316)
             if S and K and dias and dias > 0:
                 T = dias / 365.0
-                if bid:   row["vi_bid"]   = _calc_iv(bid,   S, K, T, r_rate, tipo_op)
-                if ask:   row["vi_offer"] = _calc_iv(ask,   S, K, T, r_rate, tipo_op)
+                if bid:    row["vi_bid"]    = _calc_iv(bid,    S, K, T, r_rate, tipo_op)
+                if ask:    row["vi_offer"]  = _calc_iv(ask,    S, K, T, r_rate, tipo_op)
+                veta_ult = book.get("ultimo")
+                if veta_ult:
+                    row["veta_ultimo"] = veta_ult
+                    row["vi_ultimo"]   = _calc_iv(veta_ult, S, K, T, r_rate, tipo_op)
+                else:
+                    row["veta_ultimo"] = None
+                    row["vi_ultimo"]   = None
         else:
             row["bid"] = row["ask"] = row["qty_bid"] = row["qty_ask"] = row["book_ts"] = None
             row["vi_bid"] = row["vi_offer"] = None
+            row["veta_ultimo"] = None
+            row["vi_ultimo"]   = None
 
-        # vi_ultimo ya viene del parser o _enrich_iv
         result.append(row)
 
     return {"fecha": state["fecha"], "total": len(result), "data": result}
@@ -1402,23 +1486,31 @@ def _parse_book_msg(raw: str):
 
 def _parse_md_msg(raw: str):
     """
-    Parsea mensaje market data:
-    M:securityId|qty_bid|?|bid|ask|qty_ask|ultimo|...
+    Parsea mensaje market data de Veta:
+    M:securityId|seq|qty_bid|bid|ask|qty_ask|lst|datetime|...|vol|von|...
+    fields[0]=seq, [1]=qty_bid, [2]=bid, [3]=ask, [4]=qty_ask,
+    [5]=lst (último operado), [6]=datetime, [9]=vol_ars, [10]=von (cant_ops)
     """
     pipe = raw.find('|')
     if pipe == -1: return None, None
     security_id = raw[:pipe]
     fields = raw[pipe+1:].split('|')
     try:
-        qty_bid = float(fields[0]) if fields[0] else None
+        qty_bid = float(fields[1]) if len(fields)>1 and fields[1] else None
         bid     = float(fields[2]) if len(fields)>2 and fields[2] else None
         ask     = float(fields[3]) if len(fields)>3 and fields[3] else None
         qty_ask = float(fields[4]) if len(fields)>4 and fields[4] else None
-        ultimo  = float(fields[5]) if len(fields)>5 and fields[5] else None
+        # fields[5] vacío — último operado está en fields[14], fecha en fields[15]
+        ultimo  = float(fields[14]) if len(fields)>14 and fields[14] else None
+        # vol_ars acumulado: fields[8] o fields[9]
+        vol     = float(fields[8]) if len(fields)>8 and fields[8] else None
+        von     = None  # cant_ops no disponible en M:
         return security_id, {
             "bid": bid, "ask": ask,
             "qty_bid": qty_bid, "qty_ask": qty_ask,
             "ultimo": ultimo,
+            "vol_ars": vol,
+            "cant_ops": von,
             "ts": datetime.now(TZ_ARG).isoformat()
         }
     except: return None, None
@@ -1451,26 +1543,55 @@ async def _veta_ws_loop():
                 _veta_session["id"] = session_id
                 _veta_session["conn_id"] = conn_id
 
-                # Suscribir a todos los subyacentes activos
-                opciones_activas = [r["symbol"] for r in state["opciones"]
-                                    if r.get("symbol") and (r.get("volumen_ars") or 0) > 0]
-                if opciones_activas:
-                    topics = [f"book.{_symbol_to_security_id(s)}" for s in opciones_activas[:50]]
-                    msg = json.dumps({"_req": "S", "topicType": "book", "topics": topics, "replace": False})
-                    await ws.send(msg)
-                    print(f"[Veta WS] Suscrito a {len(topics)} books")
+                # Suscribir a todas las opciones — md para último operado, book para bid/offer
+                todas = [r["symbol"] for r in state["opciones"] if r.get("symbol")]
+                for i in range(0, len(todas), 50):
+                    lote = todas[i:i+50]
+                    # md: trae bid/ask/último en tiempo real
+                    md_topics = [f"md.{_symbol_to_security_id(s)}" for s in lote]
+                    await ws.send(json.dumps({"_req": "S", "topicType": "md", "topics": md_topics, "replace": False}))
+                    await asyncio.sleep(0.05)
+                    # book: trae las puntas del book
+                    book_topics = [f"book.{_symbol_to_security_id(s)}" for s in lote]
+                    await ws.send(json.dumps({"_req": "S", "topicType": "book", "topics": book_topics, "replace": False}))
+                    await asyncio.sleep(0.05)
+                print(f"[Veta WS] Suscrito a {len(todas)} opciones (md + book)")
 
+                msg_count = 0
                 async for message in ws:
                     if isinstance(message, bytes): message = message.decode()
                     if message == 'pong': continue
-                    if message.startswith('B:'):
-                        sec_id, book = _parse_book_msg(message[2:])
-                        if sec_id and book: _veta_books[sec_id] = book
-                    elif message.startswith('M:'):
-                        sec_id, md = _parse_md_msg(message[2:])
-                        if sec_id and md:
-                            if sec_id not in _veta_books: _veta_books[sec_id] = {}
-                            _veta_books[sec_id].update(md)
+                    msg_count += 1
+                    if msg_count <= 5:
+                        print(f"[Veta WS] msg sample #{msg_count}: {message[:120]}")
+
+                    # Los mensajes pueden venir como array JSON o como string directo
+                    raw_msgs = []
+                    stripped = message.strip()
+                    if stripped.startswith('['):
+                        try:
+                            arr = json.loads(stripped)
+                            raw_msgs = arr if isinstance(arr, list) else [stripped]
+                        except: raw_msgs = [stripped]
+                    elif stripped.startswith('{'):
+                        pass  # mensaje de control, ignorar
+                    else:
+                        raw_msgs = [stripped]
+
+                    for raw in raw_msgs:
+                        if not isinstance(raw, str): continue
+                        if raw.startswith('B:'):
+                            sec_id, book = _parse_book_msg(raw[2:])
+                            if sec_id and book: _veta_books[sec_id] = book
+                        elif raw.startswith('M:'):
+                            sec_id, md = _parse_md_msg(raw[2:])
+                            if sec_id and md:
+                                if sec_id not in _veta_books: _veta_books[sec_id] = {}
+                                _veta_books[sec_id].update(md)
+
+                    # Persistir en PG cada 200 mensajes
+                    if msg_count % 200 == 0:
+                        _pg_save_veta_books()
 
         except Exception as e:
             print(f"[Veta WS] Error: {e}. Reconectando en 10s...")
