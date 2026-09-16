@@ -798,32 +798,53 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
   const vhFrac  = vhArr.length ? vhArr[0]/100 : null;
   const T_years = ([...calls,...puts][0]?.dias_vto||16)/365;
 
-  function drawGaussBand(vol, fillCol) {
+  function drawGaussBell(vol, strokeCol, fillCol) {
     if(!vol || !spot || spot<=0) return;
     const sqrtT = Math.sqrt(T_years);
-    const kLow  = spot * Math.exp(-2 * vol * sqrtT);
-    const kHigh = spot * Math.exp( 2 * vol * sqrtT);
-    const xL = xs(Math.max(kLow,  xMin));
-    const xR = xs(Math.min(kHigh, xMax));
-    if(xR <= xL) return;
+    const sigma = spot * vol * sqrtT;
+    const nPts = 120;
+    const kFrom = Math.max(xMin, spot - 3.5*sigma);
+    const kTo   = Math.min(xMax, spot + 3.5*sigma);
+    if(kTo <= kFrom) return;
+    const bellH = cH * 0.22;
+    const base  = pad.t + cH;
+    const pts = [];
+    for(let i=0; i<=nPts; i++){
+      const k = kFrom + (kTo-kFrom)*i/nPts;
+      const z = (k - spot) / sigma;
+      const g = Math.exp(-0.5*z*z);
+      pts.push({ x: xs(k), y: base - g*bellH });
+    }
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, base);
+    pts.forEach(p => ctx.lineTo(p.x, p.y));
+    ctx.lineTo(pts[pts.length-1].x, base);
+    ctx.closePath();
     ctx.fillStyle = fillCol;
-    ctx.fillRect(xL, pad.t, xR-xL, cH);
-    // Líneas ±1σ
-    const k1L = spot * Math.exp(-vol * sqrtT);
-    const k1R = spot * Math.exp( vol * sqrtT);
-    const baseAlpha = parseFloat(fillCol.match(/[\d.]+\)$/)[0]);
-    const borderCol = fillCol.replace(/[\d.]+\)$/, (baseAlpha*5).toFixed(2)+')');
-    ctx.strokeStyle = borderCol; ctx.lineWidth = 0.5; ctx.setLineDash([3,3]);
-    [k1L, k1R].forEach(k => {
-      if(k>=xMin && k<=xMax){
-        ctx.beginPath(); ctx.moveTo(xs(k), pad.t); ctx.lineTo(xs(k), pad.t+cH); ctx.stroke();
+    ctx.fill();
+    ctx.beginPath();
+    pts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+    ctx.strokeStyle = strokeCol;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    [-1,1].forEach(sign => {
+      const kSig = spot * Math.exp(sign * vol * sqrtT);
+      if(kSig>=xMin && kSig<=xMax){
+        ctx.beginPath();
+        ctx.moveTo(xs(kSig), base);
+        ctx.lineTo(xs(kSig), base - bellH*Math.exp(-0.5));
+        ctx.strokeStyle = strokeCol;
+        ctx.lineWidth = 0.5;
+        ctx.setLineDash([3,3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
     });
-    ctx.setLineDash([]);
   }
 
-  if(vhFrac)  drawGaussBand(vhFrac,  'rgba(160,160,160,0.06)');
-  if(ivAtmG)  drawGaussBand(ivAtmG,  'rgba(201,150,10,0.08)');
+  if(vhFrac)  drawGaussBell(vhFrac,  'rgba(160,160,160,0.5)', 'rgba(160,160,160,0.06)');
+  if(ivAtmG)  drawGaussBell(ivAtmG,  'rgba(201,150,10,0.5)',  'rgba(201,150,10,0.07)');
+
 
   // Grid Y
   for(let i=0;i<=5;i++){
