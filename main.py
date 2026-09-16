@@ -54,6 +54,27 @@ def _pg_init():
                 data JSONB,
                 updated_at TIMESTAMP DEFAULT NOW()
             );
+            CREATE TABLE IF NOT EXISTS bid_ask_cierre (
+                symbol      TEXT NOT NULL,
+                fecha       DATE NOT NULL,
+                bid         NUMERIC,
+                ask         NUMERIC,
+                qty_bid     NUMERIC,
+                qty_ask     NUMERIC,
+                ultimo      NUMERIC,
+                saved_at    TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (symbol, fecha)
+            );
+            CREATE TABLE IF NOT EXISTS bid_ask_cierre (
+                symbol      TEXT NOT NULL,
+                fecha       DATE NOT NULL,
+                bid         NUMERIC,
+                ask         NUMERIC,
+                qty_bid     NUMERIC,
+                qty_ask     NUMERIC,
+                saved_at    TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (symbol, fecha)
+            );
             CREATE TABLE IF NOT EXISTS subyacentes_resumen (
                 subyacente   TEXT NOT NULL,
                 fecha        DATE NOT NULL,
@@ -69,21 +90,53 @@ def _pg_init():
                 PRIMARY KEY (subyacente, fecha)
             );
             CREATE TABLE IF NOT EXISTS opciones_cierres (
-                symbol        TEXT NOT NULL,
-                fecha         DATE NOT NULL,
-                subyacente    TEXT,
-                tipo          TEXT,
-                strike        NUMERIC,
-                vencimiento   DATE,
-                ultimo        NUMERIC,
-                vi_calc       NUMERIC,
-                precio_suby   NUMERIC,
-                dias_vto      INTEGER,
-                open_interest INTEGER,
-                volumen_ars   NUMERIC,
-                cant_ops      INTEGER,
+                symbol          TEXT NOT NULL,
+                fecha           DATE NOT NULL,
+                subyacente      TEXT,
+                tipo            TEXT,
+                strike          NUMERIC,
+                vencimiento     DATE,
+                moneyness       TEXT,
+                dias_vto        INTEGER,
+                precio_suby     NUMERIC,
+                -- Precios
+                ultimo          NUMERIC,
+                apertura        NUMERIC,
+                minimo          NUMERIC,
+                maximo          NUMERIC,
+                var_pct         NUMERIC,
+                -- Volumen y OI
+                volumen_ars     NUMERIC,
+                cant_ops        INTEGER,
+                open_interest   INTEGER,
+                var_oi_pct      NUMERIC,
+                -- Precio teórico
+                precio_teorico  NUMERIC,
+                desvio_teorico  NUMERIC,
+                valor_temporal  NUMERIC,
+                -- Volatilidades
+                vi_iamc         NUMERIC,
+                vi_calc         NUMERIC,
+                vi_bid          NUMERIC,
+                vi_offer        NUMERIC,
+                vol_hist_40r    NUMERIC,
+                -- Bid/Ask al cierre 17hs
+                bid_cierre      NUMERIC,
+                ask_cierre      NUMERIC,
+                qty_bid_cierre  NUMERIC,
+                qty_ask_cierre  NUMERIC,
+                -- Griegas
+                delta           NUMERIC,
+                gamma           NUMERIC,
+                theta           NUMERIC,
+                vega            NUMERIC,
+                rho             NUMERIC,
+                -- Metadata
+                tasa_libre      NUMERIC,
+                iv_source       TEXT,
                 PRIMARY KEY (symbol, fecha)
             );
+
             CREATE TABLE IF NOT EXISTS iamc_opciones_pdf (
                 id INTEGER PRIMARY KEY DEFAULT 1,
                 pdf_bytes BYTEA,
@@ -223,29 +276,86 @@ def _pg_save_cierres(fecha: str):
                 T = dias / 365.0
                 r_rate = TASA_VTO.get(vto, 0.2316)
                 vi_calc = _calc_iv(ultimo, S, K, T, r_rate, tipo)
+            # Bid/ask del cierre de Veta
+            bid_c = snap.get("bid")
+            ask_c = snap.get("ask")
             cur.execute("""
                 INSERT INTO opciones_cierres
                     (symbol, fecha, subyacente, tipo, strike, vencimiento,
                      ultimo, vi_calc, precio_suby, dias_vto,
-                     open_interest, volumen_ars, cant_ops)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     open_interest, volumen_ars, cant_ops,
+                     bid_cierre, ask_cierre)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (symbol, fecha) DO UPDATE SET
                     ultimo=EXCLUDED.ultimo, vi_calc=EXCLUDED.vi_calc,
                     precio_suby=EXCLUDED.precio_suby,
-                    open_interest=EXCLUDED.open_interest,
-                    volumen_ars=EXCLUDED.volumen_ars,
-                    cant_ops=EXCLUDED.cant_ops
+                    bid_cierre=EXCLUDED.bid_cierre,
+                    ask_cierre=EXCLUDED.ask_cierre
             """, (sym, fecha,
                   iamc.get("subyacente"), tipo, K,
                   vto, ultimo, vi_calc, S, dias,
                   iamc.get("open_interest"),
                   iamc.get("volumen_ars"),
-                  iamc.get("cant_ops")))
+                  iamc.get("cant_ops"),
+                  bid_c, ask_c))
             saved += 1
         conn.commit(); cur.close(); conn.close()
         print(f"[PG] Cierres guardados: {saved} opciones para {fecha}")
     except Exception as e:
         print(f"PG save cierres error: {e}")
+
+def _pg_save_bid_ask_cierre(fecha: str):
+    """Guarda el último bid/ask de cada opción a las 17:00 para consulta post-rueda."""
+    if not HAS_PG or not DATABASE_URL: return
+    saved = 0
+    try:
+        conn = _pg_conn(); cur = conn.cursor()
+        for sec_id, book in _veta_books.items():
+            # Solo guardar si tiene puntas reales
+            bid = book.get("bid")
+            ask = book.get("ask")
+            if not bid and not ask:
+                # Intentar desde _veta_md
+                sym = _norm_veta_sym(sec_id)
+                md = _veta_md.get(sym)
+                if md:
+                    bid = md.get("bid")
+                    ask = md.get("ask")
+            if not bid and not ask: continue
+            # Obtener symbol limpio
+            sym = _norm_veta_sym(sec_id)
+            if not sym: continue
+            qty_bid = book.get("qty_bid")
+            qty_ask = book.get("qty_ask")
+            cur.execute("""
+                INSERT INTO bid_ask_cierre (symbol, fecha, bid, ask, qty_bid, qty_ask, saved_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (symbol, fecha) DO UPDATE SET
+                    bid=EXCLUDED.bid, ask=EXCLUDED.ask,
+                    qty_bid=EXCLUDED.qty_bid, qty_ask=EXCLUDED.qty_ask,
+                    saved_at=NOW()
+            """, (sym, fecha, bid, ask, qty_bid, qty_ask))
+            saved += 1
+        conn.commit(); cur.close(); conn.close()
+        print(f"[PG] Bid/Ask cierre guardados: {saved} opciones para {fecha}")
+    except Exception as e:
+        print(f"PG save bid_ask_cierre error: {e}")
+
+def _pg_load_bid_ask_cierre(fecha: str) -> dict:
+    """Carga bid/ask del cierre de una fecha para mostrar en la tabla."""
+    if not HAS_PG or not DATABASE_URL: return {}
+    try:
+        conn = _pg_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT symbol, bid, ask, qty_bid, qty_ask
+            FROM bid_ask_cierre WHERE fecha = %s
+        """, (fecha,))
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        return {r[0]: {"bid": r[1], "ask": r[2], "qty_bid": r[3], "qty_ask": r[4]} for r in rows}
+    except Exception as e:
+        print(f"PG load bid_ask_cierre error: {e}")
+        return {}
 
 def _pg_save_resumen_diario(rows: list, fecha: str):
     """Guarda el resumen diario por subyacente (precio, calls, puts, OI, P/C ratio, etc.)."""
@@ -296,7 +406,7 @@ def _pg_save_resumen_diario(rows: list, fecha: str):
         print(f"PG save resumen error: {e}")
 
 def _pg_save_cierres_iamc(rows: list, fecha: str):
-    """Guarda OI y último del IAMC en opciones_cierres para histórico."""
+    """Guarda todos los datos de la cadena IAMC en opciones_cierres para histórico."""
     if not HAS_PG or not DATABASE_URL or not rows: return
     saved = 0
     try:
@@ -305,29 +415,69 @@ def _pg_save_cierres_iamc(rows: list, fecha: str):
         for r in rows:
             sym = r.get("symbol")
             if not sym: continue
+            S    = r.get("precio_suby")
+            K    = r.get("strike")
+            dias = r.get("dias_vto")
+            tipo = r.get("tipo")
+            vto  = r.get("vencimiento")
             ultimo = r.get("ultimo_precio")
-            S, K, dias, tipo, vto = (r.get("precio_suby"), r.get("strike"),
-                                      r.get("dias_vto"), r.get("tipo"), r.get("vencimiento"))
+            r_rate = TASA_VTO.get(vto, 0.2316)
+            T = dias / 365.0 if dias and dias > 0 else None
             vi_calc = None
-            if ultimo and S and K and dias and dias > 0 and tipo:
-                T = dias / 365.0
-                r_rate = TASA_VTO.get(vto, 0.2316)
+            if ultimo and S and K and T and tipo:
                 vi_calc = _calc_iv(ultimo, S, K, T, r_rate, tipo)
             cur.execute("""
-                INSERT INTO opciones_cierres
-                    (symbol, fecha, subyacente, tipo, strike, vencimiento,
-                     ultimo, vi_calc, precio_suby, dias_vto,
-                     open_interest, volumen_ars, cant_ops)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                INSERT INTO opciones_cierres (
+                    symbol, fecha, subyacente, tipo, strike, vencimiento,
+                    moneyness, dias_vto, precio_suby,
+                    ultimo, apertura, minimo, maximo, var_pct,
+                    volumen_ars, cant_ops, open_interest, var_oi_pct,
+                    precio_teorico, desvio_teorico, valor_temporal,
+                    vi_iamc, vi_calc, vi_bid, vi_offer, vol_hist_40r,
+                    delta, gamma, theta, vega, rho,
+                    tasa_libre, iv_source
+                ) VALUES (
+                    %s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,
+                    %s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,
+                    %s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,
+                    %s,%s
+                )
                 ON CONFLICT (symbol, fecha) DO UPDATE SET
-                    open_interest=EXCLUDED.open_interest,
-                    volumen_ars=EXCLUDED.volumen_ars,
-                    cant_ops=EXCLUDED.cant_ops,
                     ultimo=COALESCE(opciones_cierres.ultimo, EXCLUDED.ultimo),
-                    vi_calc=COALESCE(opciones_cierres.vi_calc, EXCLUDED.vi_calc)
-            """, (sym, fecha, r.get("subyacente"), tipo, K, vto,
-                  ultimo, vi_calc, S, dias,
-                  r.get("open_interest"), r.get("volumen_ars"), r.get("cant_ops")))
+                    apertura=EXCLUDED.apertura, minimo=EXCLUDED.minimo,
+                    maximo=EXCLUDED.maximo, var_pct=EXCLUDED.var_pct,
+                    volumen_ars=EXCLUDED.volumen_ars, cant_ops=EXCLUDED.cant_ops,
+                    open_interest=EXCLUDED.open_interest, var_oi_pct=EXCLUDED.var_oi_pct,
+                    precio_teorico=EXCLUDED.precio_teorico,
+                    desvio_teorico=EXCLUDED.desvio_teorico,
+                    valor_temporal=EXCLUDED.valor_temporal,
+                    vi_iamc=EXCLUDED.vi_iamc,
+                    vi_calc=COALESCE(opciones_cierres.vi_calc, EXCLUDED.vi_calc),
+                    vi_bid=EXCLUDED.vi_bid, vi_offer=EXCLUDED.vi_offer,
+                    vol_hist_40r=EXCLUDED.vol_hist_40r,
+                    delta=EXCLUDED.delta, gamma=EXCLUDED.gamma,
+                    theta=EXCLUDED.theta, vega=EXCLUDED.vega, rho=EXCLUDED.rho,
+                    tasa_libre=EXCLUDED.tasa_libre, iv_source=EXCLUDED.iv_source
+            """, (
+                sym, fecha, r.get("subyacente"), tipo, K, vto,
+                r.get("moneyness"), dias, S,
+                ultimo, r.get("apertura_prima"), r.get("min_prima"),
+                r.get("max_prima"), r.get("var_prima_pct"),
+                r.get("volumen_ars"), r.get("cant_ops"),
+                r.get("open_interest"), r.get("var_oi_pct"),
+                r.get("precio_teorico"), r.get("desvio_teorico"),
+                r.get("valor_temporal"),
+                r.get("vol_implicita"), vi_calc,
+                r.get("vi_bid"), r.get("vi_offer"),
+                r.get("vol_hist_40r"),
+                r.get("delta"), r.get("gamma"),
+                r.get("theta"), r.get("vega"), r.get("rho"),
+                r.get("tasa_libre"), r.get("iv_source")
+            ))
             saved += 1
         conn.commit(); cur.close(); conn.close()
         print(f"[PG] Cierres IAMC guardados: {saved} opciones para {fecha}")
@@ -1409,15 +1559,33 @@ async def scheduler():
     _pg_load_veta_books()
 
 async def _guardar_cierres_si_corresponde():
-    """Guarda cierres a las 17:05 (hora argentina) si el mercado cerró hoy."""
+    """Guarda bid/ask a las 17:00 y cierres de último operado a las 17:05."""
+    bid_ask_guardado = False
+    cierres_guardado = False
+    ultimo_dia = None
     while True:
         now = datetime.now(TZ_ARG)
-        if now.weekday() < 5 and now.hour == 17 and now.minute == 5:
-            fecha_hoy = now.strftime("%Y-%m-%d")
-            print(f"[Cierre] Guardando cierres del día {fecha_hoy}")
-            _pg_save_cierres(fecha_hoy)
-            await asyncio.sleep(60)
-        await asyncio.sleep(30)
+        fecha_hoy = now.strftime("%Y-%m-%d")
+        # Reset flags al cambiar de día
+        if ultimo_dia != fecha_hoy:
+            ultimo_dia = fecha_hoy
+            bid_ask_guardado = False
+            cierres_guardado = False
+        if now.weekday() < 5:
+            # 17:00 — guardar bid/ask de cierre
+            if now.hour == 17 and now.minute == 0 and not bid_ask_guardado:
+                print(f"[Cierre] Guardando bid/ask del cierre {fecha_hoy}")
+                _pg_save_bid_ask_cierre(fecha_hoy)
+                bid_ask_guardado = True
+                await asyncio.sleep(60)
+            # 17:05 — guardar últimos operados
+            if now.hour == 17 and now.minute == 5 and not cierres_guardado:
+                print(f"[Cierre] Guardando últimos operados {fecha_hoy}")
+                _pg_save_cierres(fecha_hoy)
+                _pg_save_resumen_diario(state.get("opciones", []), fecha_hoy)
+                cierres_guardado = True
+                await asyncio.sleep(60)
+        await asyncio.sleep(20)
 
 async def _scheduler_iamc():
     """
@@ -1570,6 +1738,25 @@ async def get_cadena(
     # Enriquecer con bid/ask y VI de Veta si hay books disponibles
     TASA_VTO = {"2026-10-16": 0.2316, "2026-12-18": 0.2418}
     result = []
+    # Bid/ask del cierre: mostrar si son las 17-23hs de hoy o antes de las 10am del día siguiente
+    now_arg = datetime.now(TZ_ARG)
+    fecha_iamc = state.get("fecha", "")
+    mostrar_cierre_ba = False
+    cierre_ba_data = {}
+    if fecha_iamc:
+        hora = now_arg.hour
+        # Post-cierre hoy (17-23hs) o madrugada/mañana hasta las 10am
+        if hora >= 17 or hora < 10:
+            # Fecha del cierre a mostrar
+            if hora >= 17:
+                fecha_cierre_ba = now_arg.strftime("%Y-%m-%d")
+            else:
+                fecha_cierre_ba = (now_arg - timedelta(days=1)).strftime("%Y-%m-%d")
+            cierre_ba_data = _pg_load_bid_ask_cierre(fecha_cierre_ba)
+            if cierre_ba_data:
+                mostrar_cierre_ba = True
+                state["_cierre_ba_fecha"] = fecha_cierre_ba
+
     matched_md = 0
     for r in rows:
         row = dict(r)
@@ -1593,6 +1780,15 @@ async def get_cadena(
             matched_md += 1
             bid     = md_snap.get("bid") or bid
             ask     = md_snap.get("ask") or ask
+
+        # Si no hay bid/ask en RT y es post-cierre, usar bid/ask del cierre guardado
+        if not bid and not ask and mostrar_cierre_ba and sym in cierre_ba_data:
+            ba = cierre_ba_data[sym]
+            bid     = ba.get("bid")
+            ask     = ba.get("ask")
+            qty_bid = ba.get("qty_bid")
+            qty_ask = ba.get("qty_ask")
+            row["bid_ask_source"] = "cierre"
 
         if bid or ask or md_snap:
             row["bid"]     = bid
@@ -1636,7 +1832,8 @@ async def get_cadena(
 
         result.append(row)
 
-    return {"fecha": state["fecha"], "total": len(result), "data": result}
+    return {"fecha": state["fecha"], "total": len(result), "data": result,
+            "cierre_ba": mostrar_cierre_ba, "cierre_ba_fecha": state.get("_cierre_ba_fecha")}
 
 @app.get("/api/veta/debug-md")
 async def veta_debug_md(symbol: str = None):
