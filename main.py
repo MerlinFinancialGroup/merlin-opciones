@@ -54,6 +54,22 @@ def _pg_init():
                 data JSONB,
                 updated_at TIMESTAMP DEFAULT NOW()
             );
+            CREATE TABLE IF NOT EXISTS opciones_cierres (
+                symbol        TEXT NOT NULL,
+                fecha         DATE NOT NULL,
+                subyacente    TEXT,
+                tipo          TEXT,
+                strike        NUMERIC,
+                vencimiento   DATE,
+                ultimo        NUMERIC,
+                vi_calc       NUMERIC,
+                precio_suby   NUMERIC,
+                dias_vto      INTEGER,
+                open_interest INTEGER,
+                volumen_ars   NUMERIC,
+                cant_ops      INTEGER,
+                PRIMARY KEY (symbol, fecha)
+            );
             CREATE TABLE IF NOT EXISTS iamc_opciones_pdf (
                 id INTEGER PRIMARY KEY DEFAULT 1,
                 pdf_bytes BYTEA,
@@ -170,6 +186,112 @@ def _pg_load_veta_books():
         if rows: print(f"[PG] Restaurados {len(rows)} veta_books")
     except Exception as e:
         print(f"PG load veta_books error: {e}")
+
+def _pg_save_cierres(fecha: str):
+    """Guarda los últimos operados de _veta_md en opciones_cierres para la fecha dada."""
+    if not HAS_PG or not DATABASE_URL or not _veta_md: return
+    rows_iamc = {r["symbol"]: r for r in state.get("opciones", [])}
+    saved = 0
+    try:
+        conn = _pg_conn(); cur = conn.cursor()
+        TASA_VTO = {"2026-10-16": 0.2316, "2026-12-18": 0.2418}
+        for sym, snap in _veta_md.items():
+            ultimo = snap.get("ultimo")
+            if not ultimo: continue
+            iamc = rows_iamc.get(sym, {})
+            S    = iamc.get("precio_suby")
+            K    = iamc.get("strike")
+            dias = iamc.get("dias_vto")
+            tipo = iamc.get("tipo")
+            vto  = iamc.get("vencimiento")
+            vi_calc = None
+            if S and K and dias and dias > 0 and tipo:
+                T = dias / 365.0
+                r_rate = TASA_VTO.get(vto, 0.2316)
+                vi_calc = _calc_iv(ultimo, S, K, T, r_rate, tipo)
+            cur.execute("""
+                INSERT INTO opciones_cierres
+                    (symbol, fecha, subyacente, tipo, strike, vencimiento,
+                     ultimo, vi_calc, precio_suby, dias_vto,
+                     open_interest, volumen_ars, cant_ops)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (symbol, fecha) DO UPDATE SET
+                    ultimo=EXCLUDED.ultimo, vi_calc=EXCLUDED.vi_calc,
+                    precio_suby=EXCLUDED.precio_suby,
+                    open_interest=EXCLUDED.open_interest,
+                    volumen_ars=EXCLUDED.volumen_ars,
+                    cant_ops=EXCLUDED.cant_ops
+            """, (sym, fecha,
+                  iamc.get("subyacente"), tipo, K,
+                  vto, ultimo, vi_calc, S, dias,
+                  iamc.get("open_interest"),
+                  iamc.get("volumen_ars"),
+                  iamc.get("cant_ops")))
+            saved += 1
+        conn.commit(); cur.close(); conn.close()
+        print(f"[PG] Cierres guardados: {saved} opciones para {fecha}")
+    except Exception as e:
+        print(f"PG save cierres error: {e}")
+
+def _pg_save_cierres_iamc(rows: list, fecha: str):
+    """Guarda OI y último del IAMC en opciones_cierres para histórico."""
+    if not HAS_PG or not DATABASE_URL or not rows: return
+    saved = 0
+    try:
+        conn = _pg_conn(); cur = conn.cursor()
+        TASA_VTO = {"2026-10-16": 0.2316, "2026-12-18": 0.2418}
+        for r in rows:
+            sym = r.get("symbol")
+            if not sym: continue
+            ultimo = r.get("ultimo_precio")
+            S, K, dias, tipo, vto = (r.get("precio_suby"), r.get("strike"),
+                                      r.get("dias_vto"), r.get("tipo"), r.get("vencimiento"))
+            vi_calc = None
+            if ultimo and S and K and dias and dias > 0 and tipo:
+                T = dias / 365.0
+                r_rate = TASA_VTO.get(vto, 0.2316)
+                vi_calc = _calc_iv(ultimo, S, K, T, r_rate, tipo)
+            cur.execute("""
+                INSERT INTO opciones_cierres
+                    (symbol, fecha, subyacente, tipo, strike, vencimiento,
+                     ultimo, vi_calc, precio_suby, dias_vto,
+                     open_interest, volumen_ars, cant_ops)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (symbol, fecha) DO UPDATE SET
+                    open_interest=EXCLUDED.open_interest,
+                    volumen_ars=EXCLUDED.volumen_ars,
+                    cant_ops=EXCLUDED.cant_ops,
+                    ultimo=COALESCE(opciones_cierres.ultimo, EXCLUDED.ultimo),
+                    vi_calc=COALESCE(opciones_cierres.vi_calc, EXCLUDED.vi_calc)
+            """, (sym, fecha, r.get("subyacente"), tipo, K, vto,
+                  ultimo, vi_calc, S, dias,
+                  r.get("open_interest"), r.get("volumen_ars"), r.get("cant_ops")))
+            saved += 1
+        conn.commit(); cur.close(); conn.close()
+        print(f"[PG] Cierres IAMC guardados: {saved} opciones para {fecha}")
+    except Exception as e:
+        print(f"PG save cierres IAMC error: {e}")
+
+def _pg_load_cierre_anterior(symbol: str, fecha_hoy: str) -> dict | None:
+    """Carga el último cierre disponible para un symbol antes de fecha_hoy."""
+    if not HAS_PG or not DATABASE_URL: return None
+    try:
+        conn = _pg_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT fecha, ultimo, vi_calc, precio_suby
+            FROM opciones_cierres
+            WHERE symbol = %s AND fecha < %s
+            ORDER BY fecha DESC LIMIT 1
+        """, (symbol, fecha_hoy))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if row:
+            return {"fecha": str(row[0]), "ultimo": row[1],
+                    "vi_calc": row[2], "precio_suby": row[3]}
+        return None
+    except Exception as e:
+        print(f"PG load cierre error: {e}")
+        return None
 
 def _pg_load_latest():
     if not HAS_PG or not DATABASE_URL: return None, None
@@ -1184,6 +1306,7 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
             _pg_save_pdf(pdf_bytes, target_date.isoformat())
             if rows:
                 _pg_save_opciones(rows, target_date.isoformat())
+                _pg_save_cierres_iamc(rows, target_date.isoformat())
             state["opciones"]    = rows
             state["resumen"]     = resumen
             state["fecha"]       = target_date.isoformat()
@@ -1222,8 +1345,58 @@ async def scheduler():
     # Restaurar último estado de Veta desde PG
     _pg_load_veta_books()
 
+async def _guardar_cierres_si_corresponde():
+    """Guarda cierres a las 17:05 (hora argentina) si el mercado cerró hoy."""
     while True:
         now = datetime.now(TZ_ARG)
+        if now.weekday() < 5 and now.hour == 17 and now.minute == 5:
+            fecha_hoy = now.strftime("%Y-%m-%d")
+            print(f"[Cierre] Guardando cierres del día {fecha_hoy}")
+            _pg_save_cierres(fecha_hoy)
+            await asyncio.sleep(60)
+        await asyncio.sleep(30)
+
+async def _scheduler_iamc():
+    """
+    Descarga el PDF de IAMC:
+    - Al arrancar: si el PDF en PG tiene más de 1 día, reintenta antes de las 10am
+    - A las 18:30 ARG después del cierre
+    - Reintenta cada 15 min hasta las 20:00
+    """
+    # Al arrancar: verificar si el PDF es viejo
+    pdf_bytes, fecha_pg = _pg_load_latest()
+    if pdf_bytes and fecha_pg:
+        from datetime import date as _date
+        hoy = datetime.now(TZ_ARG).date()
+        dias_old = (hoy - fecha_pg).days if hasattr(fecha_pg, 'days') else 0
+        try:
+            if hasattr(fecha_pg, 'strftime'):
+                fecha_dt = fecha_pg
+            else:
+                fecha_dt = date.fromisoformat(str(fecha_pg))
+            dias_old = (hoy - fecha_dt).days
+        except: dias_old = 0
+
+        if dias_old > 1:
+            now = datetime.now(TZ_ARG)
+            print(f"[IAMC] PDF tiene {dias_old} días de antigüedad ({fecha_pg}), intentando actualizar...")
+            # Intentar antes de las 10am o en cualquier momento si es muy viejo
+            if now.hour < 10 or dias_old > 2:
+                for _ in range(4):  # hasta 4 intentos de 15 min
+                    ok = await descargar_iamc_pdf()
+                    if ok:
+                        print(f"[IAMC] PDF actualizado exitosamente")
+                        break
+                    now = datetime.now(TZ_ARG)
+                    if now.hour >= 10:
+                        print("[IAMC] Pasaron las 10am, esperando el ciclo de las 18:30")
+                        break
+                    print("[IAMC] Reintentando en 15 min...")
+                    await asyncio.sleep(900)
+
+    while True:
+        now = datetime.now(TZ_ARG)
+        # Próximo objetivo: 18:30 día hábil
         target = now.replace(hour=18, minute=30, second=0, microsecond=0)
         if now >= target:
             target = target + timedelta(days=1)
@@ -1231,19 +1404,18 @@ async def scheduler():
             target = target + timedelta(days=1)
 
         wait_secs = (target - now).total_seconds()
-        print(f"Próxima descarga IAMC programada: {target.strftime('%Y-%m-%d %H:%M')} ARG (en {wait_secs/3600:.1f}h)")
+        print(f"[IAMC] Próxima descarga: {target.strftime('%Y-%m-%d %H:%M')} ARG (en {wait_secs/3600:.1f}h)")
         await asyncio.sleep(wait_secs)
 
-        ok = False
-        for _ in range(10):  # máximo 10 intentos = 150 min
+        for _ in range(10):
             now = datetime.now(TZ_ARG)
             if now.hour >= 20:
-                print("Pasaron las 20:00, dejando de reintentar por hoy")
+                print("[IAMC] Pasaron las 20:00, dejando de reintentar por hoy")
                 break
             ok = await descargar_iamc_pdf()
             if ok:
                 break
-            print("Reintentando en 15 min...")
+            print("[IAMC] Reintentando en 15 min...")
             await asyncio.sleep(900)
 
 @app.on_event("startup")
@@ -1251,6 +1423,8 @@ async def startup():
     _pg_init()
     global _scheduler_task, _veta_ws_task
     _scheduler_task = asyncio.create_task(scheduler())
+    asyncio.create_task(_guardar_cierres_si_corresponde())
+    asyncio.create_task(_scheduler_iamc())
     if VETA_COOKIE:
         _veta_ws_task = asyncio.create_task(_veta_ws_loop())
         print("[Veta WS] Task iniciada")
@@ -1378,8 +1552,13 @@ async def get_cadena(
                 T = dias / 365.0
                 if bid:    row["vi_bid"]    = _calc_iv(bid,    S, K, T, r_rate, tipo_op)
                 if ask:    row["vi_offer"]  = _calc_iv(ask,    S, K, T, r_rate, tipo_op)
-                # Último operado: primero de _veta_md, luego de _veta_books
+                # Último operado: primero de _veta_md, luego de _veta_books, luego cierre PG
                 veta_ult = (md_snap.get("ultimo") if md_snap else None) or (book.get("ultimo") if book else None)
+                if not veta_ult:
+                    cierre_pg = _pg_load_cierre_anterior(sym, state.get("fecha") or datetime.now(TZ_ARG).strftime("%Y-%m-%d"))
+                    if cierre_pg:
+                        veta_ult = cierre_pg.get("ultimo")
+                        row["cierre_fecha"] = cierre_pg.get("fecha")
                 if veta_ult:
                     row["veta_ultimo"] = veta_ult
                     row["vi_ultimo"]   = _calc_iv(veta_ult, S, K, T, r_rate, tipo_op)
