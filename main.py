@@ -1333,26 +1333,36 @@ async def get_cadena(
     # Enriquecer con bid/ask y VI de Veta si hay books disponibles
     TASA_VTO = {"2026-10-16": 0.2316, "2026-12-18": 0.2418}
     result = []
-    # Debug: loguear estado de _veta_books
-    if _veta_books:
-        sample_key = next(iter(_veta_books))
-        print(f"[get_cadena] _veta_books tiene {len(_veta_books)} entries. Sample: {sample_key} → {_veta_books[sample_key]}")
-    else:
-        print(f"[get_cadena] _veta_books VACÍO")
+    matched_md = 0
     for r in rows:
         row = dict(r)
+        sym    = (row.get("symbol") or "").upper()
         sec_id = _symbol_to_security_id(row.get("symbol",""))
+        # Primero buscar en _veta_md (datos M: más frescos)
+        md_snap = _veta_md.get(sym)
+        # Luego en _veta_books (datos B: con profundidad)
         book = _veta_books.get(sec_id)
+
+        bid = ask = qty_bid = qty_ask = book_ts = None
         if book:
             bids = book.get("bids", [])
             asks = book.get("asks", [])
-            bid = bids[0]["price"] if bids else book.get("bid")
-            ask = asks[0]["price"] if asks else book.get("ask")
+            bid     = bids[0]["price"] if bids else book.get("bid")
+            ask     = asks[0]["price"] if asks else book.get("ask")
+            qty_bid = bids[0]["qty"]   if bids else book.get("qty_bid")
+            qty_ask = asks[0]["qty"]   if asks else book.get("qty_ask")
+            book_ts = book.get("ts")
+        if md_snap:
+            matched_md += 1
+            bid     = md_snap.get("bid") or bid
+            ask     = md_snap.get("ask") or ask
+
+        if bid or ask or md_snap:
             row["bid"]     = bid
             row["ask"]     = ask
-            row["qty_bid"] = bids[0]["qty"] if bids else book.get("qty_bid")
-            row["qty_ask"] = asks[0]["qty"] if asks else book.get("qty_ask")
-            row["book_ts"] = book.get("ts")
+            row["qty_bid"] = qty_bid
+            row["qty_ask"] = qty_ask
+            row["book_ts"] = book_ts
 
             # Calcular VI de bid, offer y último
             S    = row.get("precio_suby")
@@ -1384,6 +1394,17 @@ async def get_cadena(
         result.append(row)
 
     return {"fecha": state["fecha"], "total": len(result), "data": result}
+
+@app.get("/api/veta/debug-md")
+async def veta_debug_md(symbol: str = None):
+    if symbol:
+        s = _norm_veta_sym(symbol)
+        return {"lookup": s, "found": _veta_md.get(s)}
+    return {"count": len(_veta_md), "keys": list(_veta_md)[:30], "sample": list(_veta_md.values())[:5]}
+
+@app.get("/api/veta/debug-raw")
+async def veta_debug_raw(n: int = 10):
+    return {"recent": list(_veta_raw_m)[-n:]}
 
 @app.get("/api/opciones/subyacentes")
 async def get_subyacentes():
@@ -1425,6 +1446,53 @@ VETA_WS   = "wss://matriz.bcch.xoms.com.ar/ws"
 # ── Cache de books en memoria ─────────────────────────────────────────────────
 # { "bm_MERV_GFGC7000OC_24hs": { bid, ask, qty_bid, qty_ask, ts } }
 _veta_books: dict = {}
+_veta_md: dict    = {}   # "GFGV6000OC" → snapshot RT del M:
+import collections as _collections
+_veta_raw_m = _collections.deque(maxlen=80)
+
+def _norm_veta_sym(security_id: str) -> str:
+    """'bm_MERV_GFGV6000OC_CI' → 'GFGV6000OC'"""
+    s = security_id
+    for p in ("bm_MERV_", "MERV_", "bm_"):
+        if s.startswith(p): s = s[len(p):]; break
+    return s.rsplit("_", 1)[0].upper()
+
+def _pf(x):
+    try: return float(x) if x not in ("", None) else None
+    except (TypeError, ValueError): return None
+
+def _parse_veta_m(raw_after_prefix: str):
+    """Parsea 'bm_MERV_GFGV6000OC_CI|seq|qty_bid|bid|qty_ask|ask|...|ultimo...'"""
+    pipe = raw_after_prefix.find("|")
+    if pipe == -1: return None
+    security_id = raw_after_prefix[:pipe]
+    f = raw_after_prefix[pipe+1:].split("|")
+    # Según log real: f[0]=seq f[1]=qty_bid f[2]=bid f[3]=qty_ask f[4]=ask ... f[13]=ultimo
+    return {
+        "symbol":      _norm_veta_sym(security_id),
+        "security_id": security_id,
+        "bid":         _pf(f[2]) if len(f)>2 else None,
+        "ask":         _pf(f[4]) if len(f)>4 else None,
+        "ultimo":      _pf(f[13]) if len(f)>13 and f[13] else (_pf(f[2]) if len(f)>2 else None),
+    }
+
+def _dispatch_veta(item: str):
+    if not isinstance(item, str): return
+    if item.startswith("M:"):
+        _veta_raw_m.append(item)
+        snap = _parse_veta_m(item[2:])
+        if snap and snap.get("symbol"):
+            _veta_md[snap["symbol"]] = snap
+            # También actualizar _veta_books para compatibilidad
+            sec_id = snap["security_id"]
+            if sec_id not in _veta_books: _veta_books[sec_id] = {}
+            if snap.get("bid"):    _veta_books[sec_id]["bid"]    = snap["bid"]
+            if snap.get("ask"):    _veta_books[sec_id]["ask"]    = snap["ask"]
+            if snap.get("ultimo"): _veta_books[sec_id]["ultimo"] = snap["ultimo"]
+    elif item.startswith("B:"):
+        sec_id, book = _parse_book_msg(item[2:])
+        if sec_id and book: _veta_books[sec_id] = book
+
 _veta_ws_task = None
 _veta_session = {"id": None, "conn_id": None, "csrf": None}
 
@@ -1565,29 +1633,18 @@ async def _veta_ws_loop():
                     if msg_count <= 5:
                         print(f"[Veta WS] msg sample #{msg_count}: {message[:120]}")
 
-                    # Los mensajes pueden venir como array JSON o como string directo
-                    raw_msgs = []
+                    # Los mensajes pueden venir como array JSON o string directo
                     stripped = message.strip()
                     if stripped.startswith('['):
                         try:
                             arr = json.loads(stripped)
-                            raw_msgs = arr if isinstance(arr, list) else [stripped]
-                        except: raw_msgs = [stripped]
+                            if isinstance(arr, list):
+                                for item in arr: _dispatch_veta(item)
+                        except: pass
                     elif stripped.startswith('{'):
-                        pass  # mensaje de control, ignorar
+                        pass  # clock/fixstatus, ignorar
                     else:
-                        raw_msgs = [stripped]
-
-                    for raw in raw_msgs:
-                        if not isinstance(raw, str): continue
-                        if raw.startswith('B:'):
-                            sec_id, book = _parse_book_msg(raw[2:])
-                            if sec_id and book: _veta_books[sec_id] = book
-                        elif raw.startswith('M:'):
-                            sec_id, md = _parse_md_msg(raw[2:])
-                            if sec_id and md:
-                                if sec_id not in _veta_books: _veta_books[sec_id] = {}
-                                _veta_books[sec_id].update(md)
+                        _dispatch_veta(stripped)
 
                     # Persistir en PG cada 200 mensajes
                     if msg_count % 200 == 0:
