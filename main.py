@@ -1494,15 +1494,17 @@ def _parse_md_msg(raw: str):
         bid     = float(fields[2]) if len(fields)>2 and fields[2] else None
         ask     = float(fields[3]) if len(fields)>3 and fields[3] else None
         qty_ask = float(fields[4]) if len(fields)>4 and fields[4] else None
-        ultimo  = float(fields[5]) if len(fields)>5 and fields[5] else None
-        vol     = float(fields[9]) if len(fields)>9 and fields[9] else None
-        von     = float(fields[10]) if len(fields)>10 and fields[10] else None
+        # fields[5] vacío — último operado está en fields[14], fecha en fields[15]
+        ultimo  = float(fields[14]) if len(fields)>14 and fields[14] else None
+        # vol_ars acumulado: fields[8] o fields[9]
+        vol     = float(fields[8]) if len(fields)>8 and fields[8] else None
+        von     = None  # cant_ops no disponible en M:
         return security_id, {
             "bid": bid, "ask": ask,
             "qty_bid": qty_bid, "qty_ask": qty_ask,
             "ultimo": ultimo,
             "vol_ars": vol,
-            "cant_ops": int(von) if von else None,
+            "cant_ops": von,
             "ts": datetime.now(TZ_ARG).isoformat()
         }
     except: return None, None
