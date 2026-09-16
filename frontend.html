@@ -794,21 +794,80 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
   const xs = s => pad.l + (xMax===xMin ? cW/2 : (s-xMin)/(xMax-xMin)*cW);
   const ys = v => pad.t + cH - (yMax===yMin ? cH/2 : (v-yMin)/(yMax-yMin)*cH);
 
-  // ── Curva suavizada (referencia del smile) ──
-  function drawSmileCurve(pts, color) {
-    // Solo puntos con valor temporal positivo y distancia razonable
-    const valid = pts.filter(r => r._iv_ult > 0 && r.strike >= xMin && r.strike <= xMax
-                                && (r.valor_temporal == null || r.valor_temporal > 0)
-                                && Math.abs((r.strike - spot) / (spot||1)) < 0.35)
-                     .sort((a,b) => a.strike - b.strike);
-    if(valid.length < 3) return;
-    ctx.strokeStyle = color; ctx.lineWidth=1.5; ctx.setLineDash([4,4]);
+  // ── Curva IV Teórica BS (smile plano con sigma = IV ATM) ──
+  // Implementación de Black-Scholes en JS para calcular IV implícita teórica
+  function normCDF(x) {
+    const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+    const sign = x<0?-1:1, t=1/(1+p*Math.abs(x)/Math.SQRT2);
+    const y=1-((((a5*t+a4)*t+a3)*t+a2)*t+a1)*t*Math.exp(-x*x/2);
+    return 0.5*(1+sign*y);
+  }
+  function bsPrice(S,K,T,r,sigma,tipo) {
+    if(!S||!K||!T||!sigma||sigma<=0) return null;
+    const d1=(Math.log(S/K)+(r+0.5*sigma*sigma)*T)/(sigma*Math.sqrt(T));
+    const d2=d1-sigma*Math.sqrt(T);
+    if(tipo==='CALL') return S*normCDF(d1)-K*Math.exp(-r*T)*normCDF(d2);
+    return K*Math.exp(-r*T)*normCDF(-d2)-S*normCDF(-d1);
+  }
+  function calcIV(price,S,K,T,r,tipo) {
+    if(!price||price<=0||!S||!K||!T) return null;
+    let lo=0.001,hi=5,mid,p;
+    for(let i=0;i<60;i++){
+      mid=(lo+hi)/2; p=bsPrice(S,K,T,r,mid,tipo);
+      if(!p) return null;
+      if(Math.abs(p-price)<0.0001) return mid*100;
+      p>price?hi=mid:lo=mid;
+    }
+    return mid*100;
+  }
+
+  function drawTeoricoBS(pts, color, tipo) {
+    if(!spot||spot<=0) return;
+    // Usar IV ATM como sigma flat
+    const atmPt = pts.reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b, null);
+    if(!atmPt||!(atmPt._iv_ult>0)) return;
+    const sigmaFlat = atmPt._iv_ult / 100;
+    // Tasa del primer punto con dato
+    const r0 = (pts.find(r=>r.tasa_libre>0)?.tasa_libre||16.2) / 100;
+    const T0 = (pts.find(r=>r.dias_vto>0)?.dias_vto||16) / 365;
+
+    // Calcular precio teórico BS para cada strike y de ahí la IV
+    // Con sigma flat el resultado ES sigmaFlat — no tiene sentido
+    // En cambio: calcular precio BS con sigmaFlat y luego recalcular IV → siempre da sigmaFlat
+    // Lo correcto: usar la curva de volatilidad ajustada por moneyness (skew proxy)
+    // Usamos: sigma(K) = sigmaFlat * (1 + skewCoeff * ln(K/spot))
+    // donde skewCoeff se estima desde los datos reales
+    const validPts = pts.filter(r=>r._iv_ult>0&&r.strike>0&&(r.valor_temporal==null||r.valor_temporal>0)&&Math.abs((r.strike-spot)/(spot||1))<0.4);
+    if(validPts.length < 3) return;
+
+    // Estimar skew lineal por regresión simple
+    let sx=0,sy=0,sxy=0,sx2=0,n=validPts.length;
+    validPts.forEach(r=>{
+      const x=Math.log(r.strike/spot), y=r._iv_ult;
+      sx+=x; sy+=y; sxy+=x*y; sx2+=x*x;
+    });
+    const skew = n>1 ? (n*sxy-sx*sy)/(n*sx2-sx*sx) : 0;
+    const intercept = (sy-skew*sx)/n;
+
+    // Generar curva suavizada en 60 puntos
+    const kFrom = Math.max(xMin, spot*0.5);
+    const kTo   = Math.min(xMax, spot*2.0);
+    const curvePts = [];
+    for(let i=0;i<=60;i++){
+      const k = kFrom+(kTo-kFrom)*i/60;
+      const x = Math.log(k/spot);
+      const ivTeo = intercept + skew*x;  // IV teórica por regresión
+      if(ivTeo>0 && ivTeo<300) curvePts.push({x:xs(k), y:ys(ivTeo)});
+    }
+    if(curvePts.length<3) return;
+    ctx.strokeStyle=color; ctx.lineWidth=1.8; ctx.setLineDash([5,3]);
     ctx.beginPath();
-    drawCatmullRom(ctx, valid.map(r => ({x: xs(r.strike), y: ys(r._iv_ult)})), 0.4);
+    drawCatmullRom(ctx, curvePts, 0.5);
     ctx.stroke(); ctx.setLineDash([]);
   }
-  if(showCalls) drawSmileCurve(calls, 'rgba(80,180,255,0.8)');   // celeste
-  if(showPuts)  drawSmileCurve(puts,  'rgba(80,100,255,0.8)');   // azul
+
+  if(showCalls) drawTeoricoBS(calls, 'rgba(80,180,255,0.85)', 'CALL');
+  if(showPuts)  drawTeoricoBS(puts,  'rgba(80,100,255,0.85)', 'PUT');
 
   // ── Bandas gaussianas ──
   const atmRowG = [...calls,...puts].reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null);
@@ -1045,8 +1104,8 @@ function renderCadena() {
       <td class="center ${tipoCls}">${esc(r.tipo)||'—'}</td>
       <td class="gold">$${fmt(r.strike)}</td>
       <td class="center"><span class="${mBadge}">${esc(r.moneyness)||'—'}</span></td>
-      <td class="pos">${r.bid!=null?'$'+fmt(r.bid):'-'}</td>
-      <td class="neg">${r.ask!=null?'$'+fmt(r.ask):'-'}</td>
+      <td class="${r.bid_ask_source==='cierre'?'muted':'pos'}">${r.bid!=null?'$'+fmt(r.bid):'-'}</td>
+      <td class="${r.bid_ask_source==='cierre'?'muted':'neg'}">${r.ask!=null?'$'+fmt(r.ask):'-'}</td>
       <td>${r.ultimo_precio!=null?'$'+fmt(r.ultimo_precio):'-'}</td>
       <td class="pos">${r.veta_ultimo!=null?'$'+fmt(r.veta_ultimo):'-'}</td>
       <td class="muted">${r.apertura_prima!=null?'$'+fmt(r.apertura_prima):'-'}</td>
