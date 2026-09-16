@@ -614,11 +614,11 @@ function renderSmile() {
   // Leyenda (necesaria antes del early-redraw)
   const legendItems = [];
   if(showCalls){
-    legendItems.push(['Call Oper','rgba(220,220,220,0.9)',false],['Call IAMC','rgba(180,130,255,0.9)',false]);
+    legendItems.push(['Call Oper','rgba(220,220,220,0.9)',false],['Call IAMC','rgba(180,130,255,0.9)',false],['Call Teór','rgba(80,180,255,0.7)',true]);
     if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
   if(showPuts){
-    legendItems.push(['Put Oper','rgba(220,220,0,0.95)',false],['Put IAMC','rgba(255,160,50,0.9)',false]);
+    legendItems.push(['Put Oper','rgba(220,220,0,0.95)',false],['Put IAMC','rgba(255,160,50,0.9)',false],['Put Teór','rgba(80,100,255,0.7)',true]);
     if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
 
@@ -790,6 +790,24 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
   const yMax = yRawMax + yPadDyn;
   const xs = s => pad.l + (xMax===xMin ? cW/2 : (s-xMin)/(xMax-xMin)*cW);
   const ys = v => pad.t + cH - (yMax===yMin ? cH/2 : (v-yMin)/(yMax-yMin)*cH);
+
+  // ── Curva VI Teórica (Catmull-Rom) ──
+  function drawTeoricoLine(pts, color) {
+    const valid = pts.filter(r => r.iv_source === 'teorico' && r._iv_ult > 0 && r.strike >= xMin && r.strike <= xMax)
+                     .sort((a,b) => a.strike - b.strike);
+    if(valid.length < 2) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([4,4]);
+    ctx.beginPath();
+    drawCatmullRom(ctx, valid.map(r => ({x: xs(r.strike), y: ys(r._iv_ult)})));
+    ctx.stroke(); ctx.setLineDash([]);
+    // Puntos pequeños
+    valid.forEach(r => {
+      ctx.beginPath(); ctx.arc(xs(r.strike), ys(r._iv_ult), 3, 0, Math.PI*2);
+      ctx.fillStyle = color; ctx.fill();
+    });
+  }
+  if(showCalls) drawTeoricoLine(calls, 'rgba(80,180,255,0.7)');   // celeste
+  if(showPuts)  drawTeoricoLine(puts,  'rgba(80,100,255,0.7)');   // azul
 
   // ── Bandas gaussianas ──
   const atmRowG = [...calls,...puts].reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null);
