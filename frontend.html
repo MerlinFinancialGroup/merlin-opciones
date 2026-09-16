@@ -928,7 +928,7 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     const cUlt=calls.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
     cUlt.forEach(r=>{
       const x=xs(r.strike),y=ys(r._iv_ult);
-      // Punto exterior: blanco si Veta, lila si IAMC
+      // Punto exterior: blanco si operado hoy, lila si IAMC
       const cUltCol = r.vi_ultimo>0 ? 'rgba(220,220,220,0.9)' : r.iv_source==='teorico' ? 'rgba(140,140,140,0.5)' : 'rgba(180,130,255,0.9)';
       ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fillStyle=cUltCol;ctx.fill();
       // Punto interior: color BO si coincide (±0.5%), sino blanco pequeño
@@ -946,7 +946,7 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     const pUlt=puts.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
     pUlt.forEach(r=>{
       const x=xs(r.strike),y=ys(r._iv_ult);
-      // Punto exterior: amarillo si Veta, naranja claro si IAMC
+      // Punto exterior: amarillo si operado hoy, naranja claro si IAMC
       const pUltCol = r.vi_ultimo>0 ? 'rgba(220,220,0,0.95)' : r.iv_source==='teorico' ? 'rgba(140,140,140,0.5)' : 'rgba(255,160,50,0.9)';
       ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fillStyle=pUltCol;ctx.fill();
       const boRow=putsBO.find(b=>b.strike===r.strike);
@@ -987,7 +987,7 @@ function renderCadena() {
       <th>Bid</th>
       <th>Offer</th>
       <th>Último</th>
-      <th>Últ Veta</th>
+      <th>Últ Oper</th>
       <th>Apertura</th>
       <th>Mín</th>
       <th>Máx</th>
@@ -1118,7 +1118,7 @@ function exportCsv() {
   const rows = getFilteredRows();
   if (!rows.length) return;
   const cols = ['symbol','tipo','strike','moneyness','bid','ask','ultimo_precio','veta_ultimo','apertura_prima','min_prima','max_prima','var_prima_pct','volumen_ars','cant_ops','open_interest','var_oi_pct','precio_teorico','desvio_teorico','vi_bid','vi_offer','vi_ultimo','vol_implicita','vol_hist_40r','delta','gamma','theta','vega','rho','vencimiento','dias_vto'];
-  const head = ['Symbol','Tipo','Strike','Moneyness','Bid','Offer','Ultimo IAMC','Ultimo Veta','Apertura','Min','Max','Var%','Vol ARS','Ops','OI','Var OI%','P.Teorico','Desvio','VI Bid','VI Offer','VI Ult Veta','VI Ult IAMC','VH%','Delta','Gamma','Theta','Vega','Rho','Vencimiento','Dias Vto'];
+  const head = ['Symbol','Tipo','Strike','Moneyness','Bid','Offer','Ultimo','Ult Oper','Apertura','Min','Max','Var%','Vol ARS','Ops','OI','Var OI%','P.Teorico','Desvio','VI Bid','VI Offer','VI Ult Oper','VI Ult','VH%','Delta','Gamma','Theta','Vega','Rho','Vencimiento','Dias Vto'];
   const cell = v => {
     if (v == null) return '';
     const s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
