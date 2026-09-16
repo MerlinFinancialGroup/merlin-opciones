@@ -54,6 +54,20 @@ def _pg_init():
                 data JSONB,
                 updated_at TIMESTAMP DEFAULT NOW()
             );
+            CREATE TABLE IF NOT EXISTS subyacentes_resumen (
+                subyacente   TEXT NOT NULL,
+                fecha        DATE NOT NULL,
+                precio_suby  NUMERIC,
+                calls        INTEGER,
+                puts         INTEGER,
+                vol_ars      NUMERIC,
+                open_interest INTEGER,
+                put_call     NUMERIC,
+                tasa_libre   NUMERIC,
+                dias_vto_min INTEGER,
+                dias_vto_max INTEGER,
+                PRIMARY KEY (subyacente, fecha)
+            );
             CREATE TABLE IF NOT EXISTS opciones_cierres (
                 symbol        TEXT NOT NULL,
                 fecha         DATE NOT NULL,
@@ -232,6 +246,54 @@ def _pg_save_cierres(fecha: str):
         print(f"[PG] Cierres guardados: {saved} opciones para {fecha}")
     except Exception as e:
         print(f"PG save cierres error: {e}")
+
+def _pg_save_resumen_diario(rows: list, fecha: str):
+    """Guarda el resumen diario por subyacente (precio, calls, puts, OI, P/C ratio, etc.)."""
+    if not HAS_PG or not DATABASE_URL or not rows: return
+    from collections import defaultdict
+    by_suby = defaultdict(lambda: {"calls":0,"puts":0,"vol_ars":0,"oi":0,
+                                    "precio":None,"tasa":None,"dias":[]})
+    for r in rows:
+        sub = r.get("subyacente")
+        if not sub: continue
+        tipo = r.get("tipo","")
+        d = by_suby[sub]
+        if tipo == "CALL": d["calls"] += 1
+        elif tipo == "PUT": d["puts"] += 1
+        d["vol_ars"] += r.get("volumen_ars") or 0
+        d["oi"]      += r.get("open_interest") or 0
+        if not d["precio"] and r.get("precio_suby"): d["precio"] = r["precio_suby"]
+        if not d["tasa"]   and r.get("tasa_libre"):  d["tasa"]   = r["tasa_libre"]
+        if r.get("dias_vto"): d["dias"].append(r["dias_vto"])
+    try:
+        conn = _pg_conn(); cur = conn.cursor()
+        for sub, d in by_suby.items():
+            total = d["calls"] + d["puts"]
+            pc = round(d["puts"]/d["calls"], 4) if d["calls"] > 0 else None
+            dias = d["dias"]
+            cur.execute("""
+                INSERT INTO subyacentes_resumen
+                    (subyacente, fecha, precio_suby, calls, puts,
+                     vol_ars, open_interest, put_call, tasa_libre,
+                     dias_vto_min, dias_vto_max)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (subyacente, fecha) DO UPDATE SET
+                    precio_suby=EXCLUDED.precio_suby,
+                    calls=EXCLUDED.calls, puts=EXCLUDED.puts,
+                    vol_ars=EXCLUDED.vol_ars,
+                    open_interest=EXCLUDED.open_interest,
+                    put_call=EXCLUDED.put_call,
+                    tasa_libre=EXCLUDED.tasa_libre,
+                    dias_vto_min=EXCLUDED.dias_vto_min,
+                    dias_vto_max=EXCLUDED.dias_vto_max
+            """, (sub, fecha, d["precio"], d["calls"], d["puts"],
+                  d["vol_ars"], d["oi"], pc, d["tasa"],
+                  min(dias) if dias else None,
+                  max(dias) if dias else None))
+        conn.commit(); cur.close(); conn.close()
+        print(f"[PG] Resumen diario guardado: {len(by_suby)} subyacentes para {fecha}")
+    except Exception as e:
+        print(f"PG save resumen error: {e}")
 
 def _pg_save_cierres_iamc(rows: list, fecha: str):
     """Guarda OI y último del IAMC en opciones_cierres para histórico."""
@@ -1307,6 +1369,7 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
             if rows:
                 _pg_save_opciones(rows, target_date.isoformat())
                 _pg_save_cierres_iamc(rows, target_date.isoformat())
+                _pg_save_resumen_diario(rows, target_date.isoformat())
             state["opciones"]    = rows
             state["resumen"]     = resumen
             state["fecha"]       = target_date.isoformat()

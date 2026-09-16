@@ -565,7 +565,10 @@ function renderSmile() {
 
   // Pools de datos
   state.cadena.forEach(r => { r._iv_ult = (r.vi_ultimo > 0 ? r.vi_ultimo : r.vol_implicita) || null; });
-  let base = state.cadena.filter(r => r.strike > 0 && r._iv_ult > 0);
+  // Excluir opciones sin valor temporal (muy ITM, precio viejo)
+  let base = state.cadena.filter(r => r.strike > 0 && r._iv_ult > 0
+    && (r.valor_temporal == null || r.valor_temporal > 0)
+    && r._iv_ult < 250);
   let baseBO = state.cadena.filter(r => r.strike > 0 && (r.vi_bid > 0 || r.vi_offer > 0));
   if (vto)   { base = base.filter(r => r.vencimiento === vto); baseBO = baseBO.filter(r => r.vencimiento === vto); }
   if (show === 'traded') { base = base.filter(r => (r.volumen_ars||0) > 0); baseBO = baseBO.filter(r => (r.volumen_ars||0) > 0); }
@@ -614,11 +617,11 @@ function renderSmile() {
   // Leyenda (necesaria antes del early-redraw)
   const legendItems = [];
   if(showCalls){
-    legendItems.push(['Call Oper','rgba(220,220,220,0.9)',false],['Call IAMC','rgba(180,130,255,0.9)',false],['Call Teór','rgba(80,180,255,0.7)',true]);
+    legendItems.push(['Call Oper','rgba(220,220,220,0.9)',false],['Call IAMC','rgba(180,130,255,0.9)',false],['Call Smile','rgba(80,180,255,0.8)',true]);
     if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
   if(showPuts){
-    legendItems.push(['Put Oper','rgba(220,220,0,0.95)',false],['Put IAMC','rgba(255,160,50,0.9)',false],['Put Teór','rgba(80,100,255,0.7)',true]);
+    legendItems.push(['Put Oper','rgba(220,220,0,0.95)',false],['Put IAMC','rgba(255,160,50,0.9)',false],['Put Smile','rgba(80,100,255,0.8)',true]);
     if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
 
@@ -791,23 +794,21 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
   const xs = s => pad.l + (xMax===xMin ? cW/2 : (s-xMin)/(xMax-xMin)*cW);
   const ys = v => pad.t + cH - (yMax===yMin ? cH/2 : (v-yMin)/(yMax-yMin)*cH);
 
-  // ── Curva VI Teórica (Catmull-Rom) ──
-  function drawTeoricoLine(pts, color) {
-    const valid = pts.filter(r => r.iv_source === 'teorico' && r._iv_ult > 0 && r.strike >= xMin && r.strike <= xMax)
+  // ── Curva suavizada (referencia del smile) ──
+  function drawSmileCurve(pts, color) {
+    // Solo puntos con valor temporal positivo y distancia razonable
+    const valid = pts.filter(r => r._iv_ult > 0 && r.strike >= xMin && r.strike <= xMax
+                                && (r.valor_temporal == null || r.valor_temporal > 0)
+                                && Math.abs((r.strike - spot) / (spot||1)) < 0.35)
                      .sort((a,b) => a.strike - b.strike);
-    if(valid.length < 2) return;
-    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([4,4]);
+    if(valid.length < 3) return;
+    ctx.strokeStyle = color; ctx.lineWidth=1.5; ctx.setLineDash([4,4]);
     ctx.beginPath();
-    drawCatmullRom(ctx, valid.map(r => ({x: xs(r.strike), y: ys(r._iv_ult)})));
+    drawCatmullRom(ctx, valid.map(r => ({x: xs(r.strike), y: ys(r._iv_ult)})), 0.4);
     ctx.stroke(); ctx.setLineDash([]);
-    // Puntos pequeños
-    valid.forEach(r => {
-      ctx.beginPath(); ctx.arc(xs(r.strike), ys(r._iv_ult), 3, 0, Math.PI*2);
-      ctx.fillStyle = color; ctx.fill();
-    });
   }
-  if(showCalls) drawTeoricoLine(calls, 'rgba(80,180,255,0.7)');   // celeste
-  if(showPuts)  drawTeoricoLine(puts,  'rgba(80,100,255,0.7)');   // azul
+  if(showCalls) drawSmileCurve(calls, 'rgba(80,180,255,0.8)');   // celeste
+  if(showPuts)  drawSmileCurve(puts,  'rgba(80,100,255,0.8)');   // azul
 
   // ── Bandas gaussianas ──
   const atmRowG = [...calls,...puts].reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null);
