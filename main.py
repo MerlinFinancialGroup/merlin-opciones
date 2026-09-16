@@ -1290,21 +1290,13 @@ async def get_cadena(
             r_rate = TASA_VTO.get(vto, 0.2316)
             if S and K and dias and dias > 0:
                 T = dias / 365.0
-                if bid:    row["vi_bid"]    = _calc_iv(bid,    S, K, T, r_rate, tipo_op)
-                if ask:    row["vi_offer"]  = _calc_iv(ask,    S, K, T, r_rate, tipo_op)
-                veta_ult = book.get("ultimo")
-                if veta_ult:
-                    row["veta_ultimo"] = veta_ult
-                    row["vi_ultimo"]   = _calc_iv(veta_ult, S, K, T, r_rate, tipo_op)
-                else:
-                    row["veta_ultimo"] = None
-                    row["vi_ultimo"]   = None
+                if bid:   row["vi_bid"]   = _calc_iv(bid,   S, K, T, r_rate, tipo_op)
+                if ask:   row["vi_offer"] = _calc_iv(ask,   S, K, T, r_rate, tipo_op)
         else:
             row["bid"] = row["ask"] = row["qty_bid"] = row["qty_ask"] = row["book_ts"] = None
             row["vi_bid"] = row["vi_offer"] = None
-            row["veta_ultimo"] = None
-            row["vi_ultimo"]   = None
 
+        # vi_ultimo ya viene del parser o _enrich_iv
         result.append(row)
 
     return {"fecha": state["fecha"], "total": len(result), "data": result}
@@ -1410,29 +1402,23 @@ def _parse_book_msg(raw: str):
 
 def _parse_md_msg(raw: str):
     """
-    Parsea mensaje market data de Veta:
-    M:securityId|seq|qty_bid|bid|ask|qty_ask|lst|datetime|...|vol|von|...
-    fields[0]=seq, [1]=qty_bid, [2]=bid, [3]=ask, [4]=qty_ask,
-    [5]=lst (último operado), [6]=datetime, [9]=vol_ars, [10]=von (cant_ops)
+    Parsea mensaje market data:
+    M:securityId|qty_bid|?|bid|ask|qty_ask|ultimo|...
     """
     pipe = raw.find('|')
     if pipe == -1: return None, None
     security_id = raw[:pipe]
     fields = raw[pipe+1:].split('|')
     try:
-        qty_bid = float(fields[1]) if len(fields)>1 and fields[1] else None
+        qty_bid = float(fields[0]) if fields[0] else None
         bid     = float(fields[2]) if len(fields)>2 and fields[2] else None
         ask     = float(fields[3]) if len(fields)>3 and fields[3] else None
         qty_ask = float(fields[4]) if len(fields)>4 and fields[4] else None
         ultimo  = float(fields[5]) if len(fields)>5 and fields[5] else None
-        vol     = float(fields[9]) if len(fields)>9 and fields[9] else None
-        von     = float(fields[10]) if len(fields)>10 and fields[10] else None
         return security_id, {
             "bid": bid, "ask": ask,
             "qty_bid": qty_bid, "qty_ask": qty_ask,
             "ultimo": ultimo,
-            "vol_ars": vol,
-            "cant_ops": int(von) if von else None,
             "ts": datetime.now(TZ_ARG).isoformat()
         }
     except: return None, None
@@ -1465,16 +1451,14 @@ async def _veta_ws_loop():
                 _veta_session["id"] = session_id
                 _veta_session["conn_id"] = conn_id
 
-                # Suscribir a todas las opciones (con o sin operaciones)
-                todas = [r["symbol"] for r in state["opciones"] if r.get("symbol")]
-                # Enviar en lotes de 50 para no saturar el WS
-                for i in range(0, len(todas), 50):
-                    lote = todas[i:i+50]
-                    topics = [f"md.{_symbol_to_security_id(s)}" for s in lote]
-                    msg = json.dumps({"_req": "S", "topicType": "md", "topics": topics, "replace": False})
+                # Suscribir a todos los subyacentes activos
+                opciones_activas = [r["symbol"] for r in state["opciones"]
+                                    if r.get("symbol") and (r.get("volumen_ars") or 0) > 0]
+                if opciones_activas:
+                    topics = [f"book.{_symbol_to_security_id(s)}" for s in opciones_activas[:50]]
+                    msg = json.dumps({"_req": "S", "topicType": "book", "topics": topics, "replace": False})
                     await ws.send(msg)
-                    await asyncio.sleep(0.1)
-                print(f"[Veta WS] Suscrito a {len(todas)} opciones (md)")
+                    print(f"[Veta WS] Suscrito a {len(topics)} books")
 
                 async for message in ws:
                     if isinstance(message, bytes): message = message.decode()
@@ -1487,11 +1471,6 @@ async def _veta_ws_loop():
                         if sec_id and md:
                             if sec_id not in _veta_books: _veta_books[sec_id] = {}
                             _veta_books[sec_id].update(md)
-                            # También guardar sin prefijo md. por compatibilidad
-                            clean_id = sec_id.replace('md.', '')
-                            if clean_id != sec_id:
-                                if clean_id not in _veta_books: _veta_books[clean_id] = {}
-                                _veta_books[clean_id].update(md)
 
         except Exception as e:
             print(f"[Veta WS] Error: {e}. Reconectando en 10s...")
