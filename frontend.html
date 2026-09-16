@@ -557,19 +557,21 @@ function renderView() {
 function renderSmile() {
   const vto  = document.getElementById('ctrl-vto').value;
   const show = document.getElementById('ctrl-show').value;
-  // Pool base IV Últ: define los puntos principales del smile
-  // Usar vi_ultimo (de Veta) cuando existe; sino vol_implicita (IAMC)
-  state.cadena.forEach(r => { r._iv_ult = r.vi_ultimo > 0 ? r.vi_ultimo : r._iv_ult; });
+  const tipoFiltro = document.getElementById('ctrl-tipo').value;
+  const st = tipoFiltro === 'CALL' ? 'call' : tipoFiltro === 'PUT' ? 'put' : 'ambos';
+
+  // Clave de contexto — resetea zoom solo si cambia suby/vto/tipo
+  const zoomKey = (state.currentSuby||'') + '|' + vto + '|' + st;
+
+  // Pools de datos
+  state.cadena.forEach(r => { r._iv_ult = (r.vi_ultimo > 0 ? r.vi_ultimo : r.vol_implicita) || null; });
   let base = state.cadena.filter(r => r.strike > 0 && r._iv_ult > 0);
-  // Pool BO: para las líneas VI Bid/Offer (incluye filas sin IV Últ)
   let baseBO = state.cadena.filter(r => r.strike > 0 && (r.vi_bid > 0 || r.vi_offer > 0));
   if (vto)   { base = base.filter(r => r.vencimiento === vto); baseBO = baseBO.filter(r => r.vencimiento === vto); }
   if (show === 'traded') { base = base.filter(r => (r.volumen_ars||0) > 0); baseBO = baseBO.filter(r => (r.volumen_ars||0) > 0); }
   if (show === 'oi')     { base = base.filter(r => (r.open_interest||0) > 0); baseBO = baseBO.filter(r => (r.open_interest||0) > 0); }
   if (!base.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
 
-  const tipoFiltro = document.getElementById('ctrl-tipo').value; // 'CALL', 'PUT' o ''
-  const st = tipoFiltro === 'CALL' ? 'call' : tipoFiltro === 'PUT' ? 'put' : 'ambos';
   let rows = st === 'call' ? base.filter(r=>r.tipo==='CALL')
            : st === 'put'  ? base.filter(r=>r.tipo==='PUT')
            : base;
@@ -579,55 +581,25 @@ function renderSmile() {
   const puts    = base.filter(r => r.tipo==='PUT').sort((a,b)=>a.strike-b.strike);
   const callsBO = baseBO.filter(r => r.tipo==='CALL').sort((a,b)=>a.strike-b.strike);
   const putsBO  = baseBO.filter(r => r.tipo==='PUT').sort((a,b)=>a.strike-b.strike);
-  const spot  = base.find(r=>r.precio_suby)?.precio_suby || 0;
-  const allIV = rows.map(r=>r._iv_ult).filter(v=>v>0);
+  const spot    = base.find(r=>r.precio_suby)?.precio_suby || 0;
+  const allIV   = rows.map(r=>r._iv_ult).filter(v=>v>0);
   if (!allIV.length) { showEmpty('Sin datos de IV Último para los filtros seleccionados'); return; }
+
   const ivMin = Math.min(...allIV), ivMax = Math.max(...allIV);
   const ivAvg = (allIV.reduce((a,b)=>a+b,0)/allIV.length).toFixed(2);
   const atmRow = spot>0 ? rows.reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null) : null;
   const otmP = spot>0 ? puts.filter(r=>r.strike<spot*0.95&&r._iv_ult>0).at(-1) : null;
   const otmC = spot>0 ? calls.filter(r=>r.strike>spot*1.05&&r._iv_ult>0)[0] : null;
-  const skew = otmP&&otmC ? +(otmP.vol_implicita-otmC.vol_implicita).toFixed(2) : null;
+  const skew = otmP&&otmC ? +(otmP._iv_ult-otmC._iv_ult).toFixed(2) : null;
   const vh = rows.map(r=>r.vol_hist_40r).find(v=>v!=null);
 
-  document.getElementById('content').innerHTML = `
-    <div style="padding:16px 20px;overflow:auto;height:100%">
-      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;margin-bottom:14px">
-        <canvas id="sc" width="1200" height="507" style="width:100%;height:507px"></canvas>
-        <div id="stt" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#c8c0b0;margin-top:4px;min-height:14px"></div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
-        ${[
-          ['IV Mín',ivMin.toFixed(2)+'%',''],
-          ['IV Máx',ivMax.toFixed(2)+'%',''],
-          ['IV Prom',ivAvg+'%','#C9960A'],
-          ['IV ATM',atmRow?atmRow.vol_implicita.toFixed(2)+'%':'—','#C9960A'],
-          ['Skew Put-Call',skew!=null?(skew>0?'+':'')+skew+'%':'—',skew>0?'#c0392b':skew<0?'#3ab07a':''],
-          ['VH 40r',vh!=null?vh.toFixed(2)+'%':'—',''],
-          ['Strikes',allIV.length,''],
-          ['Spot','$'+fmt(spot),'#C9960A'],
-        ].map(([l,v,c])=>`<div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
-          <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;color:#706858;margin-bottom:3px">${l}</div>
-          <div style="font-size:14px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${c||'#e8e0cc'}">${v}</div>
-        </div>`).join('')}
-      </div>
-    </div>`;
-
-  const canvas = document.getElementById('sc');
-  const dpr = window.devicePixelRatio||1;
-  const W = canvas.offsetWidth, H = 507;
-  canvas.width = W*dpr; canvas.height = H*dpr;
-  canvas.style.width = W+'px'; canvas.style.height = H+'px';
-  const ctx = canvas.getContext('2d');
-  ctx.scale(dpr,dpr);
-  const pad = {l:50,r:16,t:28,b:32}; // t=28 para dejar espacio a la leyenda
-  const cW = W-pad.l-pad.r, cH = H-pad.t-pad.b;
-
-  // Determinar rango Y: incluir vi_bid y vi_offer además de vol_implicita
   const showCalls = st === 'call' || st === 'ambos';
   const showPuts  = st === 'put'  || st === 'ambos';
+  const soloUno   = st === 'call' || st === 'put';
   const visRows   = base.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
   const visRowsBO = baseBO.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
+
+  // Rango Y global (todos los puntos)
   const allYVals = [
     ...visRows.map(r=>r._iv_ult).filter(v=>v>0),
     ...visRowsBO.flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)),
@@ -638,154 +610,164 @@ function renderSmile() {
   const sMin = Math.min(...sArr), sMax = Math.max(...sArr);
   const yPad = (yRawMax-yRawMin)*0.03||0.5;
   const yMin = yRawMin-yPad, yMax = yRawMax+yPad;
-  const xs = s => pad.l + (sMax===sMin ? cW/2 : (s-sMin)/(sMax-sMin)*cW);
-  const ys = v => pad.t + cH - (yMax===yMin ? cH/2 : (v-yMin)/(yMax-yMin)*cH);
 
-  ctx.fillStyle='#12100a'; ctx.fillRect(0,0,W,H);
-
-  // Grid Y
-  for(let i=0;i<=5;i++){
-    const v=yMin+(yMax-yMin)*i/5, y=ys(v);
-    ctx.strokeStyle='#1a1710'; ctx.lineWidth=0.5;
-    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(W-pad.r,y); ctx.stroke();
-    ctx.fillStyle='#706858'; ctx.font='9px monospace'; ctx.textAlign='right';
-    ctx.fillText(v.toFixed(1)+'%',pad.l-3,y+3);
-  }
-  // Grid X
-  for(let i=0;i<=6;i++){
-    const s=sMin+(sMax-sMin)*i/6, x=xs(s);
-    ctx.strokeStyle='#1a1710'; ctx.lineWidth=0.5;
-    ctx.beginPath(); ctx.moveTo(x,pad.t); ctx.lineTo(x,H-pad.b); ctx.stroke();
-    ctx.fillStyle='#706858'; ctx.font='9px monospace'; ctx.textAlign='center';
-    ctx.fillText('$'+Math.round(s).toLocaleString('es-AR'),x,H-pad.b+12);
-  }
-  // Línea ATM
-  if(spot>=sMin&&spot<=sMax){
-    const xa=xs(spot);
-    ctx.strokeStyle='rgba(201,150,10,0.3)'; ctx.lineWidth=1; ctx.setLineDash([4,4]);
-    ctx.beginPath(); ctx.moveTo(xa,pad.t); ctx.lineTo(xa,H-pad.b); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle='#C9960A'; ctx.font='9px monospace'; ctx.textAlign='center';
-    ctx.fillText('ATM',xa,H-pad.b+22);
-  }
-
-  // Helper: dibujar una serie de puntos con línea
-  function drawSerie(pts, getY, strokeCol, dotCol, dash=[]) {
-    const valid = pts.filter(r=>getY(r)>0);
-    if(valid.length<1) return;
-    if(valid.length>=2){
-      ctx.strokeStyle=strokeCol; ctx.lineWidth=1.2; ctx.setLineDash(dash);
-      ctx.beginPath();
-      valid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(getY(r))):ctx.lineTo(xs(r.strike),ys(getY(r))));
-      ctx.stroke(); ctx.setLineDash([]);
-    }
-    valid.forEach(r=>{
-      const x=xs(r.strike),y=ys(getY(r));
-      ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2); ctx.fillStyle=dotCol; ctx.fill();
-    });
-  }
-
-  const soloUno = st === 'call' || st === 'put'; // Bid/Offer solo en vista individual
-
-  if(showCalls){
-    if(soloUno){
-      // VI Bid calls: verde lima
-      drawSerie(callsBO, r=>r.vi_bid,   'rgba(58,176,122,0.7)',  'rgba(58,176,122,0.9)',  [3,3]);
-      // VI Offer calls: naranja
-      drawSerie(callsBO, r=>r.vi_offer, 'rgba(192,57,43,0.7)',   'rgba(192,57,43,0.9)',   [3,3]);
-    }
-    // IV Últ calls — línea sólida + puntos grandes
-    const cUlt = calls.filter(r=>r._iv_ult>0);
-    if(cUlt.length>=2){
-      ctx.strokeStyle='rgba(220,220,220,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
-      ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult)));
-      ctx.stroke(); ctx.setLineDash([]);
-    }
-    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),5,0,Math.PI*2); ctx.fillStyle='rgba(220,220,220,0.9)'; ctx.fill(); });
-  }
-  if(showPuts){
-    if(soloUno){
-      // VI Bid puts: rojo claro
-      drawSerie(putsBO, r=>r.vi_bid,   'rgba(58,176,122,0.7)',  'rgba(58,176,122,0.9)',  [3,3]);
-      // VI Offer puts: violeta
-      drawSerie(putsBO, r=>r.vi_offer, 'rgba(192,57,43,0.7)',   'rgba(192,57,43,0.9)',   [3,3]);
-    }
-    const pUlt = puts.filter(r=>r._iv_ult>0);
-    if(pUlt.length>=2){
-      ctx.strokeStyle='rgba(201,150,10,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
-      ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult)));
-      ctx.stroke(); ctx.setLineDash([]);
-    }
-    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),5,0,Math.PI*2); ctx.fillStyle='rgba(201,150,10,0.9)'; ctx.fill(); });
-  }
-
-  // Leyenda
-  let lx = pad.l;
-  const ly = pad.t - 14;
+  // Leyenda (necesaria antes del early-redraw)
   const legendItems = [];
   if(showCalls){
-    legendItems.push(['CALL Últ','rgba(220,220,220,0.9)',false]);
+    legendItems.push(['CALL Veta','rgba(220,220,220,0.9)',false],['CALL IAMC','rgba(180,130,255,0.9)',false]);
     if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
   if(showPuts){
-    legendItems.push(['PUT Últ','rgba(201,150,10,0.9)',false]);
+    legendItems.push(['PUT Veta','rgba(201,150,10,0.9)',false],['PUT IAMC','rgba(255,160,50,0.9)',false]);
     if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
-  ctx.font='9px monospace'; ctx.textAlign='left';
-  for(const [label,col,isDash] of legendItems){
-    ctx.beginPath(); ctx.arc(lx+4,ly,4,0,Math.PI*2);
-    ctx.fillStyle = isDash ? 'transparent' : col; ctx.fill();
-    if(isDash){ ctx.strokeStyle=col; ctx.lineWidth=1.5; ctx.stroke(); }
-    ctx.fillStyle='#c8c0b0'; ctx.fillText(label, lx+12, ly+3);
-    lx += ctx.measureText(label).width + 24;
-  }
 
-  // Tooltip
-  canvas.onmousemove = e => {
-    const rect=canvas.getBoundingClientRect();
-    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
-    let best=null, bd=20;
-    visRows.forEach(r=>{
-      [['vol_implicita',r._iv_ult],['vi_bid',r.vi_bid],['vi_offer',r.vi_offer]].forEach(([field,val])=>{
-        if(!(val>0)) return;
-        const d=Math.hypot(xs(r.strike)-mx,ys(val)-my);
-        if(d<bd){bd=d;best={r,field,val};}
-      });
-    });
-    document.getElementById('stt').innerHTML = best
-      ? `<span style="color:${best.r.tipo==='CALL'?'#3ab07a':'#c0392b'}">${esc(best.r.tipo)}</span> · ${esc(best.r.symbol)} · $${fmt(best.r.strike)} · <span style="color:#706858">${best.field==='vol_implicita'?'IV Últ':best.field==='vi_bid'?'VI Bid':'VI Offer'}</span> <span style="color:#C9960A">${best.val.toFixed(2)}%</span> · Último $${fmt(best.r.ultimo_precio)} · OI ${fmtN(best.r.open_interest)}`
-      : '';
-  };
-  canvas.onmouseleave = ()=>{ document.getElementById('stt').innerHTML=''; };
-
-  // Zoom con rueda del mouse (eje X, centrado en el cursor)
-  // Preservar zoom entre refreshes — solo resetear si cambió el subyacente o vencimiento
-  const zoomKey = (state.currentSuby||'') + '|' + (document.getElementById('ctrl-vto').value||'') + '|' + st;
-  if(!state._smileZoom || state._smileZoomKey !== zoomKey){
-    // Zoom inicial: ajustar al rango real de strikes con padding del 3%
+  // Zoom: preservar si la key es la misma, resetear si cambió
+  if (!state._smileZoom || state._smileZoomKey !== zoomKey) {
     const sRange = sMax - sMin || 1;
     state._smileZoom = { xMin: sMin - sRange*0.03, xMax: sMax + sRange*0.03 };
     state._smileZoomKey = zoomKey;
   }
-  canvas._zoom = state._smileZoom;
+
+  // Rebuild DOM solo si no existe el canvas
+  const existingCanvas = document.getElementById('sc');
+  if (!existingCanvas) {
+    document.getElementById('content').innerHTML = `
+      <div style="padding:16px 20px;overflow:auto;height:100%">
+        <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;margin-bottom:14px">
+          <canvas id="sc" width="1200" height="507" style="width:100%;height:507px;cursor:grab"></canvas>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;min-height:14px">
+            <div id="stt" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#c8c0b0"></div>
+            <button onclick="resetSmileZoom()" style="padding:2px 8px;background:none;border:0.5px solid #2a2510;color:#706858;cursor:pointer;font-size:9px;font-family:'JetBrains Mono',monospace;border-radius:3px" title="Restablecer zoom">↺ zoom</button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+          ${[
+            ['IV Mín',ivMin.toFixed(2)+'%',''],
+            ['IV Máx',ivMax.toFixed(2)+'%',''],
+            ['IV Prom',ivAvg+'%','#C9960A'],
+            ['IV ATM',atmRow?atmRow._iv_ult.toFixed(2)+'%':'—','#C9960A'],
+            ['Skew Put-Call',skew!=null?(skew>0?'+':'')+skew+'%':'—',skew>0?'#c0392b':skew<0?'#3ab07a':''],
+            ['VH 40r',vh!=null?vh.toFixed(2)+'%':'—',''],
+            ['Strikes',allIV.length,''],
+            ['Spot','$'+fmt(spot),'#C9960A'],
+          ].map(([l,v,c])=>`<div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
+            <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;color:#706858;margin-bottom:3px">${l}</div>
+            <div style="font-size:14px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${c||'#e8e0cc'}">${v}</div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  // Dibujar canvas
+  const canvas = document.getElementById('sc');
+  const dpr = window.devicePixelRatio||1;
+  const W = canvas.offsetWidth, H = 507;
+  canvas.width = W*dpr; canvas.height = H*dpr;
+  canvas.style.width = W+'px'; canvas.style.height = H+'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr,dpr);
+  const pad = {l:50,r:16,t:28,b:32};
+  const cW = W-pad.l-pad.r, cH = H-pad.t-pad.b;
+  const ly = pad.t - 14;
+
+  // Función de dibujo reutilizable (usa zoom actual)
+  function doDraw() {
+    const z = state._smileZoom;
+    redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
+      z.xMin, z.xMax, yMin, yMax,
+      spot, sMin, sMax, showCalls, showPuts, soloUno,
+      calls, puts, callsBO, putsBO, visRows, legendItems, ly);
+  }
+
+  doDraw();
+
+  // Zoom con rueda
   canvas.onwheel = e => {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const z = canvas._zoom;
+    const mx = (e.clientX - rect.left) * (W / rect.width);
+    const z = state._smileZoom;
     const range = z.xMax - z.xMin;
     const factor = e.deltaY < 0 ? 0.85 : 1/0.85;
     const pivot = z.xMin + (mx - pad.l) / cW * range;
-    const newRange = range * factor;
-    const newMin = Math.max(sMin, pivot - (pivot - z.xMin) / range * newRange);
-    const newMax = Math.min(sMax, newMin + newRange);
-    canvas._zoom = { xMin: newMin, xMax: Math.min(sMax, newMax) };
-    state._smileZoom = canvas._zoom;
-    // Redibujar solo el canvas sin re-renderizar todo
-    redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
-      canvas._zoom.xMin, canvas._zoom.xMax, yMin, yMax,
-      spot, sMin, sMax, showCalls, showPuts, soloUno,
-      calls, puts, callsBO, putsBO, visRows, legendItems, ly);
+    const newRange = Math.max((sMax-sMin)*0.05, range * factor);
+    const margin = (sMax-sMin)*0.1;
+    let newMin = pivot - (pivot - z.xMin) / range * newRange;
+    let newMax = newMin + newRange;
+    if(newMin < sMin - margin){ newMin = sMin - margin; newMax = newMin + newRange; }
+    if(newMax > sMax + margin){ newMax = sMax + margin; newMin = newMax - newRange; }
+    state._smileZoom = { xMin: newMin, xMax: newMax };
+    doDraw();
   };
+
+  // Pan con drag
+  let dragStart = null;
+  canvas.onmousedown = e => {
+    dragStart = { x: e.clientX, zoom: {...state._smileZoom} };
+    canvas.style.cursor = 'grabbing';
+  };
+  canvas.onmousemove = e => {
+    if(dragStart) {
+      const rect = canvas.getBoundingClientRect();
+      const dx = (e.clientX - dragStart.x) * (W / rect.width);
+      const range = dragStart.zoom.xMax - dragStart.zoom.xMin;
+      const shift = -dx / cW * range;
+      state._smileZoom = { xMin: dragStart.zoom.xMin + shift, xMax: dragStart.zoom.xMax + shift };
+      doDraw();
+    } else {
+      // Tooltip
+      const rect = canvas.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) * (W / rect.width);
+      const my = (e.clientY - rect.top) * (H / rect.height);
+      const z = state._smileZoom;
+      const xsL = s => pad.l + (z.xMax===z.xMin ? cW/2 : (s-z.xMin)/(z.xMax-z.xMin)*cW);
+      // yMin/yMax dinámico según visibles
+      const inView = r => r.strike >= z.xMin && r.strike <= z.xMax;
+      const yValsV = [...visRows.filter(inView).map(r=>r._iv_ult).filter(v=>v>0),
+        ...(soloUno?visRowsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)):[])]
+      const yrMin = yValsV.length?Math.min(...yValsV):yMin;
+      const yrMax = yValsV.length?Math.max(...yValsV):yMax;
+      const yp = (yrMax-yrMin)*0.03||0.5;
+      const ysL = v => pad.t + cH - ((v-(yrMin-yp))/((yrMax+yp)-(yrMin-yp))*cH);
+      let best=null, bd=20;
+      [...visRows,...visRowsBO].forEach(r=>{
+        [['_iv_ult',r._iv_ult],['vi_bid',r.vi_bid],['vi_offer',r.vi_offer]].forEach(([field,val])=>{
+          if(!(val>0)) return;
+          const d=Math.hypot(xsL(r.strike)-mx,ysL(val)-my);
+          if(d<bd){bd=d;best={r,field,val};}
+        });
+      });
+      document.getElementById('stt').innerHTML = best
+        ? `<span style="color:${best.r.tipo==='CALL'?'#3ab07a':'#c0392b'}">${esc(best.r.tipo)}</span> · ${esc(best.r.symbol)} · $${fmt(best.r.strike)} · <span style="color:#706858">${best.field==='_iv_ult'?'IV Últ':best.field==='vi_bid'?'VI Bid':'VI Offer'}</span> <span style="color:#C9960A">${best.val.toFixed(2)}%</span> · Último $${fmt(best.r.ultimo_precio)} · OI ${fmtN(best.r.open_interest)}`
+        : '';
+    }
+  };
+  canvas.onmouseup = () => { dragStart = null; canvas.style.cursor = 'grab'; };
+  canvas.onmouseleave = () => {
+    dragStart = null;
+    canvas.style.cursor = 'grab';
+    const stt = document.getElementById('stt');
+    if(stt) stt.innerHTML = '';
+  };
+}
+
+// Dibuja una curva suavizada Catmull-Rom a partir de puntos {x,y}
+function drawCatmullRom(ctx, pts, tension=0.5) {
+  if(pts.length < 2) return;
+  if(pts.length === 2){ ctx.moveTo(pts[0].x,pts[0].y); ctx.lineTo(pts[1].x,pts[1].y); return; }
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for(let i=0; i<pts.length-1; i++){
+    const p0 = pts[Math.max(i-1,0)];
+    const p1 = pts[i];
+    const p2 = pts[i+1];
+    const p3 = pts[Math.min(i+2,pts.length-1)];
+    const cp1x = p1.x + (p2.x-p0.x)*tension/3;
+    const cp1y = p1.y + (p2.y-p0.y)*tension/3;
+    const cp2x = p2.x - (p3.x-p1.x)*tension/3;
+    const cp2y = p2.y - (p3.y-p1.y)*tension/3;
+    ctx.bezierCurveTo(cp1x,cp1y,cp2x,cp2y,p2.x,p2.y);
+  }
 }
 
 function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
@@ -832,33 +814,95 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     ctx.fillStyle='#C9960A'; ctx.font='9px monospace'; ctx.textAlign='center';
     ctx.fillText('ATM',xa,H-pad.b+22);
   }
-  function drawS(pts, getY, strokeCol, dotCol, dash=[]) {
+  function drawS(pts, getY, strokeCol, dotCol, dash=[], smooth=false) {
     const valid = pts.filter(r=>getY(r)>0&&r.strike>=xMin&&r.strike<=xMax);
     if(!valid.length) return;
     if(valid.length>=2){
       ctx.strokeStyle=strokeCol; ctx.lineWidth=1.2; ctx.setLineDash(dash);
-      ctx.beginPath(); valid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(getY(r))):ctx.lineTo(xs(r.strike),ys(getY(r))));
+      ctx.beginPath();
+      if(smooth && valid.length>=3){
+        drawCatmullRom(ctx, valid.map(r=>({x:xs(r.strike),y:ys(getY(r))})));
+      } else {
+        valid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(getY(r))):ctx.lineTo(xs(r.strike),ys(getY(r))));
+      }
       ctx.stroke(); ctx.setLineDash([]);
     }
     valid.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(getY(r)),3,0,Math.PI*2); ctx.fillStyle=dotCol; ctx.fill(); });
   }
+  // Orden de dibujo: líneas primero, luego puntos BO (chicos), luego puntos Últ (grandes encima)
+  // Así cuando coinciden, el punto del operado envuelve al de bid/offer
+
+  // ── Líneas ──
   if(showCalls){
     if(soloUno){
-      drawS(callsBO,r=>r.vi_bid,'rgba(58,176,122,0.7)','rgba(58,176,122,0.9)',[3,3]);
-      drawS(callsBO,r=>r.vi_offer,'rgba(192,57,43,0.7)','rgba(192,57,43,0.9)',[3,3]);
+      const cBidL=callsBO.filter(r=>r.vi_bid>0&&r.strike>=xMin&&r.strike<=xMax);
+      const cOffL=callsBO.filter(r=>r.vi_offer>0&&r.strike>=xMin&&r.strike<=xMax);
+      if(cBidL.length>=2){ctx.strokeStyle='rgba(58,176,122,0.7)';ctx.lineWidth=1.2;ctx.setLineDash([3,3]);ctx.beginPath();cBidL.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_bid)):ctx.lineTo(xs(r.strike),ys(r.vi_bid)));ctx.stroke();ctx.setLineDash([]);}
+      if(cOffL.length>=2){ctx.strokeStyle='rgba(192,57,43,0.7)';ctx.lineWidth=1.2;ctx.setLineDash([3,3]);ctx.beginPath();cOffL.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_offer)):ctx.lineTo(xs(r.strike),ys(r.vi_offer)));ctx.stroke();ctx.setLineDash([]);}
     }
     const cUlt=calls.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
-    if(cUlt.length>=2){ ctx.strokeStyle='rgba(220,220,220,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult))); ctx.stroke(); ctx.setLineDash([]); }
-    cUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),5,0,Math.PI*2); ctx.fillStyle='rgba(220,220,220,0.9)'; ctx.fill(); });
+    if(cUlt.length>=2){ctx.strokeStyle='rgba(220,220,220,0.7)';ctx.lineWidth=1.5;ctx.setLineDash([3,3]);ctx.beginPath();cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult)));ctx.stroke();ctx.setLineDash([]);}
   }
   if(showPuts){
     if(soloUno){
-      drawS(putsBO,r=>r.vi_bid,'rgba(58,176,122,0.7)','rgba(58,176,122,0.9)',[3,3]);
-      drawS(putsBO,r=>r.vi_offer,'rgba(192,57,43,0.7)','rgba(192,57,43,0.9)',[3,3]);
+      const pBidL=putsBO.filter(r=>r.vi_bid>0&&r.strike>=xMin&&r.strike<=xMax);
+      const pOffL=putsBO.filter(r=>r.vi_offer>0&&r.strike>=xMin&&r.strike<=xMax);
+      if(pBidL.length>=2){ctx.strokeStyle='rgba(58,176,122,0.7)';ctx.lineWidth=1.2;ctx.setLineDash([3,3]);ctx.beginPath();pBidL.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_bid)):ctx.lineTo(xs(r.strike),ys(r.vi_bid)));ctx.stroke();ctx.setLineDash([]);}
+      if(pOffL.length>=2){ctx.strokeStyle='rgba(192,57,43,0.7)';ctx.lineWidth=1.2;ctx.setLineDash([3,3]);ctx.beginPath();pOffL.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_offer)):ctx.lineTo(xs(r.strike),ys(r.vi_offer)));ctx.stroke();ctx.setLineDash([]);}
     }
     const pUlt=puts.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
-    if(pUlt.length>=2){ ctx.strokeStyle='rgba(201,150,10,0.7)'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.beginPath(); pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult))); ctx.stroke(); ctx.setLineDash([]); }
-    pUlt.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(r._iv_ult),5,0,Math.PI*2); ctx.fillStyle='rgba(201,150,10,0.9)'; ctx.fill(); });
+    if(pUlt.length>=2){ctx.strokeStyle='rgba(201,150,10,0.7)';ctx.lineWidth=1.5;ctx.setLineDash([3,3]);ctx.beginPath();pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult)));ctx.stroke();ctx.setLineDash([]);}
+  }
+
+  // ── Puntos BO (radio 3, se dibujan antes) ──
+  if(showCalls && soloUno){
+    callsBO.filter(r=>r.strike>=xMin&&r.strike<=xMax).forEach(r=>{
+      if(r.vi_bid>0){ctx.beginPath();ctx.arc(xs(r.strike),ys(r.vi_bid),3,0,Math.PI*2);ctx.fillStyle='rgba(58,176,122,0.9)';ctx.fill();}
+      if(r.vi_offer>0){ctx.beginPath();ctx.arc(xs(r.strike),ys(r.vi_offer),3,0,Math.PI*2);ctx.fillStyle='rgba(192,57,43,0.9)';ctx.fill();}
+    });
+  }
+  if(showPuts && soloUno){
+    putsBO.filter(r=>r.strike>=xMin&&r.strike<=xMax).forEach(r=>{
+      if(r.vi_bid>0){ctx.beginPath();ctx.arc(xs(r.strike),ys(r.vi_bid),3,0,Math.PI*2);ctx.fillStyle='rgba(58,176,122,0.9)';ctx.fill();}
+      if(r.vi_offer>0){ctx.beginPath();ctx.arc(xs(r.strike),ys(r.vi_offer),3,0,Math.PI*2);ctx.fillStyle='rgba(192,57,43,0.9)';ctx.fill();}
+    });
+  }
+
+  // ── Puntos Últ (radio 6 exterior + radio 3 interior de color BO si coincide) ──
+  if(showCalls){
+    const cUlt=calls.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
+    cUlt.forEach(r=>{
+      const x=xs(r.strike),y=ys(r._iv_ult);
+      // Punto exterior: blanco si Veta, lila si IAMC
+      const cUltCol = r.vi_ultimo>0 ? 'rgba(220,220,220,0.9)' : 'rgba(180,130,255,0.9)';
+      ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fillStyle=cUltCol;ctx.fill();
+      // Punto interior: color BO si coincide (±0.5%), sino blanco pequeño
+      const boRow=callsBO.find(b=>b.strike===r.strike);
+      let innerCol='rgba(180,180,180,0.6)';
+      if(boRow){
+        const tol=Math.abs(r._iv_ult)*0.005+0.1;
+        if(boRow.vi_bid>0&&Math.abs(boRow.vi_bid-r._iv_ult)<tol) innerCol='rgba(58,176,122,1)';
+        else if(boRow.vi_offer>0&&Math.abs(boRow.vi_offer-r._iv_ult)<tol) innerCol='rgba(192,57,43,1)';
+      }
+      ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fillStyle=innerCol;ctx.fill();
+    });
+  }
+  if(showPuts){
+    const pUlt=puts.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
+    pUlt.forEach(r=>{
+      const x=xs(r.strike),y=ys(r._iv_ult);
+      // Punto exterior: amarillo si Veta, naranja claro si IAMC
+      const pUltCol = r.vi_ultimo>0 ? 'rgba(201,150,10,0.9)' : 'rgba(255,160,50,0.9)';
+      ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fillStyle=pUltCol;ctx.fill();
+      const boRow=putsBO.find(b=>b.strike===r.strike);
+      let innerCol='rgba(150,110,5,0.6)';
+      if(boRow){
+        const tol=Math.abs(r._iv_ult)*0.005+0.1;
+        if(boRow.vi_bid>0&&Math.abs(boRow.vi_bid-r._iv_ult)<tol) innerCol='rgba(58,176,122,1)';
+        else if(boRow.vi_offer>0&&Math.abs(boRow.vi_offer-r._iv_ult)<tol) innerCol='rgba(192,57,43,1)';
+      }
+      ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fillStyle=innerCol;ctx.fill();
+    });
   }
   // Leyenda
   let lx=pad.l; ctx.font='9px monospace'; ctx.textAlign='left';
