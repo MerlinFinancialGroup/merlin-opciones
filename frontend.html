@@ -154,6 +154,46 @@ td.muted{color:#706858}
 .est-be{font-size:10px;font-family:'JetBrains Mono',monospace;color:#706858;text-align:center}
 .est-section-title{font-size:11px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;padding:6px 0 2px;border-bottom:0.5px solid #2a2510}
 .est-loading{display:flex;align-items:center;justify-content:center;height:200px;color:#706858;font-family:'JetBrains Mono',monospace;font-size:11px}
+
+/* ── VISUALIZADOR ── */
+.vis-overlay{position:fixed;inset:0;background:#0e0d0a;z-index:200;display:flex;flex-direction:column;overflow:hidden}
+.vis-header{display:flex;align-items:center;gap:16px;padding:10px 20px;border-bottom:1px solid #2a2510;background:#12100a;flex-shrink:0;flex-wrap:wrap}
+.vis-back{background:none;border:0.5px solid #2a2510;color:#a09880;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace}
+.vis-back:hover{border-color:#C9960A;color:#C9960A}
+.vis-title{font-size:16px;font-weight:700;color:#e8e0cc}
+.vis-subtitle{font-size:10px;font-family:'JetBrains Mono',monospace;color:#706858}
+.vis-kpis{display:flex;gap:20px;margin-left:auto;flex-wrap:wrap}
+.vis-kpi{text-align:right}
+.vis-kpi .k-lbl{font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.6px;color:#706858}
+.vis-kpi .k-val{font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.vis-body{flex:1;overflow:auto;padding:16px 20px;display:flex;flex-direction:column;gap:12px}
+.vis-tabs{display:flex;gap:4px;flex-shrink:0}
+.vis-tab{padding:5px 14px;border:0.5px solid #2a2510;background:none;color:#a09880;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;border-radius:4px;transition:all .1s}
+.vis-tab.active{background:#C9960A;color:#0e0d0a;border-color:#C9960A;font-weight:700}
+.vis-heatmap{overflow:auto;border:0.5px solid #2a2510;border-radius:6px}
+.vis-heatmap table{border-collapse:collapse;font-size:10px;font-family:'JetBrains Mono',monospace;white-space:nowrap}
+.vis-heatmap th{position:sticky;top:0;background:#12100a;padding:5px 8px;text-align:center;color:#706858;border-bottom:1px solid #2a2510;font-size:9px;z-index:2}
+.vis-heatmap th.sticky-col{position:sticky;left:0;z-index:3;background:#12100a;text-align:right}
+.vis-heatmap td{padding:3px 8px;text-align:right;border:0.5px solid #1a1710}
+.vis-heatmap td.price-col{position:sticky;left:0;background:#12100a;color:#a09880;font-weight:500;z-index:1;border-right:1px solid #2a2510}
+.vis-legs-detail{display:flex;gap:8px;flex-wrap:wrap}
+.vis-leg-card{background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:10px 14px;min-width:180px}
+.vis-leg-card .vl-name{font-size:12px;font-weight:600;color:#e8e0cc;margin-bottom:6px}
+.vis-leg-card .vl-row{display:flex;justify-content:space-between;font-size:10px;font-family:'JetBrains Mono',monospace;padding:2px 0;color:#a09880}
+.vis-leg-card .vl-row span{color:#e8e0cc}
+
+/* ── SLIDER RETORNO/CHANCE ── */
+.slider-wrap{display:flex;align-items:center;gap:8px;margin-left:8px}
+.slider-lbl{font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.6px;white-space:nowrap}
+.slider-lbl.left{color:#c0392b}
+.slider-lbl.right{color:#3ab07a}
+input[type=range].rc-slider{-webkit-appearance:none;appearance:none;width:120px;height:4px;background:linear-gradient(to right,#c0392b,#C9960A,#3ab07a);border-radius:2px;outline:none;cursor:pointer}
+input[type=range].rc-slider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#e8e0cc;border:2px solid #C9960A;cursor:pointer}
+
+/* ── TARGET PRICE ── */
+.target-input{background:#0e0d0a;border:0.5px solid #2a2510;color:#e8e0cc;padding:4px 8px;border-radius:4px;font-size:11px;font-family:'JetBrains Mono',monospace;outline:none;width:90px}
+.target-input:focus{border-color:#C9960A}
+.target-pct{font-size:10px;font-family:'JetBrains Mono',monospace;color:#706858;min-width:40px}
 </style>
 </head>
 <body>
@@ -1240,10 +1280,14 @@ function renderResumen() {
 
 const EST_STATE = {
   sesgo:       'neutral',
-  vto:         '',          // '' = ambos
+  vto:         '',
   budget:      null,
   loading:     false,
-  data:        null,        // último response del backend
+  data:        null,
+  targetPrice: null,
+  rcWeight:    50,
+  visStrat:    null,
+  visTab:      'pnl',
 };
 
 const SESGO_LABEL = {
@@ -1264,8 +1308,7 @@ const CAT_LABEL = {
 async function loadEstrategias() {
   if (!state.currentSuby) return;
   EST_STATE.loading = true;
-  const el = document.getElementById('content');
-  el.innerHTML = `<div class="est-loading">Calculando estrategias...</div>`;
+  document.getElementById('content').innerHTML = '<div class="est-loading">Calculando estrategias...</div>';
 
   const params = new URLSearchParams({ subyacente: state.currentSuby, sesgo: EST_STATE.sesgo });
   if (EST_STATE.vto)    params.set('vencimiento', EST_STATE.vto);
@@ -1278,22 +1321,46 @@ async function loadEstrategias() {
     renderEstrategias();
   } catch(e) {
     EST_STATE.loading = false;
-    el.innerHTML = `<div class="est-loading">Error: ${esc(e.message)}</div>`;
+    document.getElementById('content').innerHTML = `<div class="est-loading">Error: ${esc(e.message)}</div>`;
   }
+}
+
+function _scoreStrats(strats) {
+  // rcWeight: 0=solo retorno, 100=solo chance
+  const w = EST_STATE.rcWeight / 100;
+  return [...strats].sort((a, b) => {
+    const retA = a.max_profit && a.max_risk ? Math.abs(a.max_profit / a.max_risk) : 0;
+    const retB = b.max_profit && b.max_risk ? Math.abs(b.max_profit / b.max_risk) : 0;
+    const chA  = a.chance || 0;
+    const chB  = b.chance || 0;
+    const scoreA = (1 - w) * retA * 10 + w * chA;
+    const scoreB = (1 - w) * retB * 10 + w * chB;
+    return scoreB - scoreA;
+  });
 }
 
 function renderEstrategias() {
   if (state.view !== 'estrategias') return;
 
-  const el = document.getElementById('content');
+  // Si hay visualizador abierto, mostrarlo
+  if (EST_STATE.visStrat) {
+    _renderVisualizador(EST_STATE.visStrat);
+    return;
+  }
 
-  // Toolbar
+  const el = document.getElementById('content');
+  const spot = state.cadena.find(r => r.precio_suby)?.precio_suby || 0;
+
   const vtoOpts = [
-    { v: '',            l: 'Oct + Dic' },
-    { v: '2026-10-16',  l: 'Octubre'   },
-    { v: '2026-12-18',  l: 'Diciembre' },
+    { v: '',           l: 'Oct + Dic' },
+    { v: '2026-10-16', l: 'Octubre'   },
+    { v: '2026-12-18', l: 'Diciembre' },
   ];
   const sesgos = ['very_bearish','bearish','neutral','bullish','very_bullish'];
+
+  const tgtPct = spot && EST_STATE.targetPrice
+    ? ((EST_STATE.targetPrice - spot) / spot * 100).toFixed(1)
+    : null;
 
   el.innerHTML = `
   <div class="est-layout">
@@ -1310,66 +1377,106 @@ function renderEstrategias() {
           `<button class="vto-btn${EST_STATE.vto===o.v?' active':''}" data-vto="${o.v}">${o.l}</button>`
         ).join('')}
       </div>
-      <span class="ctrl-lbl" style="margin-left:8px">Budget $</span>
-      <input class="budget-input" id="budget-input" type="number" min="0" step="1000"
-        placeholder="sin límite" value="${EST_STATE.budget||''}">
+      <span class="ctrl-lbl" style="margin-left:8px">Precio target $</span>
+      <input class="target-input" id="target-input" type="number" min="0" step="10"
+        placeholder="${spot ? Math.round(spot) : 'spot'}" value="${EST_STATE.targetPrice||''}">
+      <span class="target-pct" id="target-pct">${tgtPct != null ? (tgtPct>0?'+':'')+tgtPct+'%' : ''}</span>
+      <span class="ctrl-lbl" style="margin-left:4px">Lotes</span>
+      <input class="budget-input" id="budget-input" type="number" min="1" step="1"
+        placeholder="1" value="${EST_STATE.budget||''}">
       <button class="csv-btn" id="btn-calc-est">▶ Calcular</button>
+    </div>
+    <div class="est-toolbar" style="padding:7px 14px;gap:6px">
+      <span class="slider-lbl left">↑↑ Max Retorno</span>
+      <input type="range" class="rc-slider" id="rc-slider" min="0" max="100" value="${EST_STATE.rcWeight}">
+      <span class="slider-lbl right">Max Chance ✓</span>
+      <span style="font-size:9px;font-family:'JetBrains Mono',monospace;color:#706858;margin-left:4px" id="rc-label">${_rcLabel(EST_STATE.rcWeight)}</span>
     </div>
     <div id="est-results">
       ${EST_STATE.loading
         ? '<div class="est-loading">Calculando...</div>'
-        : EST_STATE.data ? _renderEstResults(EST_STATE.data) : '<div class="est-loading">Presioná Calcular para ver estrategias</div>'}
+        : EST_STATE.data ? _renderEstResults(EST_STATE.data) : '<div class="est-loading">Elegí el sesgo y presioná Calcular</div>'}
     </div>
   </div>`;
 
-  // Eventos toolbar
+  // Eventos
   document.getElementById('sesgo-btns').addEventListener('click', e => {
     const btn = e.target.closest('.sesgo-btn');
     if (!btn) return;
     EST_STATE.sesgo = btn.dataset.sesgo;
     document.querySelectorAll('.sesgo-btn').forEach(b => b.classList.toggle('active', b===btn));
   });
-
   document.getElementById('vto-toggle').addEventListener('click', e => {
     const btn = e.target.closest('.vto-btn');
     if (!btn) return;
     EST_STATE.vto = btn.dataset.vto;
     document.querySelectorAll('.vto-btn').forEach(b => b.classList.toggle('active', b===btn));
   });
-
+  document.getElementById('target-input').addEventListener('input', e => {
+    const v = parseFloat(e.target.value);
+    EST_STATE.targetPrice = isNaN(v) ? null : v;
+    const pct = spot && EST_STATE.targetPrice ? ((EST_STATE.targetPrice - spot)/spot*100).toFixed(1) : null;
+    document.getElementById('target-pct').textContent = pct != null ? (pct>0?'+':'')+pct+'%' : '';
+    if (EST_STATE.data) {
+      requestAnimationFrame(() => _drawAllPayoffs(EST_STATE.data));
+    }
+  });
   document.getElementById('budget-input').addEventListener('change', e => {
     const v = parseFloat(e.target.value);
     EST_STATE.budget = isNaN(v) ? null : v;
   });
-
+  document.getElementById('rc-slider').addEventListener('input', e => {
+    EST_STATE.rcWeight = parseInt(e.target.value);
+    document.getElementById('rc-label').textContent = _rcLabel(EST_STATE.rcWeight);
+    // Re-renderizar resultados con nuevo orden
+    if (EST_STATE.data) {
+      document.getElementById('est-results').innerHTML = _renderEstResults(EST_STATE.data);
+      requestAnimationFrame(() => _drawAllPayoffs(EST_STATE.data));
+    }
+  });
   document.getElementById('btn-calc-est').addEventListener('click', () => {
     const v = parseFloat(document.getElementById('budget-input').value);
     EST_STATE.budget = isNaN(v) ? null : v;
     loadEstrategias();
   });
+  // Click en card → visualizador
+  document.getElementById('est-results').addEventListener('click', e => {
+    const card = e.target.closest('.est-card[data-idx]');
+    if (!card) return;
+    const vto = card.dataset.vto;
+    const idx = parseInt(card.dataset.idx);
+    const strat = EST_STATE.data?.estrategias?.[vto]?.[idx];
+    if (strat) {
+      EST_STATE.visStrat = { ...strat, _vto: vto, _idx: idx };
+      EST_STATE.visTab   = 'pnl';
+      _renderVisualizador(EST_STATE.visStrat);
+    }
+  });
 
-  // Dibujar payoffs
   if (EST_STATE.data) {
     requestAnimationFrame(() => _drawAllPayoffs(EST_STATE.data));
   }
 }
 
+function _rcLabel(w) {
+  if (w <= 20)  return 'Prioridad: Retorno';
+  if (w >= 80)  return 'Prioridad: Chance';
+  return 'Equilibrado';
+}
+
 function _renderEstResults(data) {
   const estrategias = data.estrategias || {};
   const vtos = Object.keys(estrategias).sort();
-  if (!vtos.length) return '<div class="est-loading">No hay estrategias disponibles para los parámetros seleccionados</div>';
+  if (!vtos.length) return '<div class="est-loading">Sin estrategias para los parámetros seleccionados</div>';
 
   let html = '';
   for (const vto of vtos) {
-    const strats = estrategias[vto];
-    if (!strats?.length) continue;
+    const strats = _scoreStrats(estrategias[vto] || []);
+    if (!strats.length) continue;
     const label = vto === '2026-10-16' ? 'Octubre — 16/10/2026' : 'Diciembre — 18/12/2026';
     html += `<div class="est-section-title">${label} · ${strats[0]?.dias_vto || '?'} días</div>`;
     html += `<div class="est-grid">`;
-    for (let i = 0; i < strats.length; i++) {
-      const s = strats[i];
-      html += _renderEstCard(s, vto, i);
-    }
+    strats.forEach((s, i) => { html += _renderEstCard(s, vto, i); });
     html += `</div>`;
   }
   return html;
@@ -1377,44 +1484,41 @@ function _renderEstResults(data) {
 
 function _renderEstCard(s, vto, idx) {
   const canvasId = `payoff-${vto.replace(/-/g,'')}-${idx}`;
-  const chanceVal = s.chance != null ? s.chance.toFixed(1) + '%' : '—';
   const chanceColor = s.chance == null ? '#706858'
-    : s.chance >= 60 ? '#3ab07a'
-    : s.chance >= 40 ? '#C9960A'
-    : '#c0392b';
+    : s.chance >= 60 ? '#3ab07a' : s.chance >= 40 ? '#C9960A' : '#c0392b';
 
-  const maxProfitTxt = s.max_profit == null ? 'Ilimitado'
-    : s.max_profit > 1e7 ? 'Ilimitado'
-    : '$' + fmt(s.max_profit);
-  const maxRiskTxt = s.max_risk == null ? 'Ilimitado'
-    : s.max_risk < -1e7 ? 'Ilimitado'
-    : '$' + fmt(Math.abs(s.max_risk));
-  const costoTxt = s.costo_neto >= 0
-    ? `Débito $${fmt(s.costo_neto)}`
-    : `Crédito $${fmt(Math.abs(s.costo_neto))}`;
-  const costoColor = s.costo_neto >= 0 ? '#c0392b' : '#3ab07a';
+  const maxProfitTxt = !s.max_profit || s.max_profit > 1e7 ? 'Ilimitado' : '$' + fmt(s.max_profit);
+  const maxRiskTxt   = !s.max_risk   || s.max_risk < -1e7  ? 'Ilimitado' : '$' + fmt(Math.abs(s.max_risk));
+  const costoLote    = s.costo_lote != null ? s.costo_lote : s.costo_neto * 100;
+  const lotes        = s.lotes || 1;
+  const total        = s.total != null ? s.total : costoLote * lotes;
+  const esDébito     = costoLote >= 0;
+  const costoColor   = esDébito ? '#c0392b' : '#3ab07a';
+  const retRisk      = (s.max_risk && s.max_risk < 0 && s.max_profit > 0)
+    ? ((s.max_profit / Math.abs(s.max_risk)) * 100).toFixed(0) + '%' : '—';
+  const beList = s.break_evens?.length ? s.break_evens.map(b => '$' + fmt(b)).join(' / ') : '—';
 
-  const retRisk = (s.max_risk && s.max_risk < 0 && s.max_profit > 0)
-    ? ((s.max_profit / Math.abs(s.max_risk)) * 100).toFixed(0) + '%'
-    : '—';
-
-  const beList = s.break_evens?.length
-    ? s.break_evens.map(b => '$' + fmt(b)).join(' / ')
-    : '—';
+  // P&L al precio target
+  const tgt = EST_STATE.targetPrice;
+  let tgtPnl = null;
+  if (tgt && s.payoff?.length) {
+    const closest = s.payoff.reduce((b, p) => Math.abs(p.s - tgt) < Math.abs(b.s - tgt) ? p : b);
+    tgtPnl = closest.pnl;
+  }
 
   const legsHtml = (s.legs || []).map(l =>
-    `<div class="est-leg ${l.side}">${l.side === 'long' ? '▲' : '▼'} ${l.tipo} $${fmt(l.strike)} · Prima $${fmt(l.prima)}${l.bid&&l.ask ? ` <span style="color:#706858">(bid $${fmt(l.bid)} / ask $${fmt(l.ask)})</span>` : ''}</div>`
+    `<div class="est-leg ${l.side}">${l.side==='long'?'▲':'▼'} ${l.tipo} $${fmt(l.strike)} · $${fmt(l.prima)}/acc${l.bid&&l.ask?` <span style="color:#706858">(${fmt(l.bid)}/${fmt(l.ask)})</span>`:''}</div>`
   ).join('');
 
   return `
-  <div class="est-card">
+  <div class="est-card" data-idx="${idx}" data-vto="${esc(vto)}" style="cursor:pointer" title="Click para ver detalle">
     <div class="est-card-header">
       <div>
-        <div class="est-name">${esc(s.nombre)}</div>
-        <div class="est-cat">${CAT_LABEL[s.categoria] || s.categoria}</div>
+        <div class="est-name">${esc(s.nombre)} <span style="font-size:9px;color:#706858;font-weight:400">↗ ver detalle</span></div>
+        <div class="est-cat">${CAT_LABEL[s.categoria]||s.categoria}</div>
       </div>
       <div class="est-chance">
-        <div class="val" style="color:${chanceColor}">${chanceVal}</div>
+        <div class="val" style="color:${chanceColor}">${s.chance!=null?s.chance.toFixed(1)+'%':'—'}</div>
         <div class="lbl">Chance</div>
       </div>
     </div>
@@ -1432,9 +1536,14 @@ function _renderEstCard(s, vto, idx) {
         <div class="m-val gold">${retRisk}</div>
       </div>
       <div class="est-metric" style="grid-column:1/-1">
-        <div class="m-lbl">Costo neto</div>
-        <div class="m-val" style="color:${costoColor}">${costoTxt}</div>
+        <div class="m-lbl">Costo por lote</div>
+        <div class="m-val" style="color:${costoColor}">${esDébito?'Débito':'Crédito'} $${fmt(Math.abs(costoLote))} · ${lotes} lote${lotes>1?'s':''} = $${fmt(Math.abs(total))}</div>
       </div>
+      ${tgtPnl != null ? `
+      <div class="est-metric" style="grid-column:1/-1;border-color:#9b59b644">
+        <div class="m-lbl">P&L al target $${fmt(tgt)}</div>
+        <div class="m-val" style="color:${tgtPnl>=0?'#3ab07a':'#c0392b'}">${tgtPnl>=0?'+':''}$${fmt(tgtPnl)} por acción · ${lotes} lote${lotes>1?'s':''} = ${tgtPnl*lotes*100>=0?'+':''}$${fmt(tgtPnl*lotes*100)}</div>
+      </div>` : ''}
     </div>
     <canvas class="est-payoff-canvas" id="${canvasId}" height="120"></canvas>
     <div class="est-be">Break-even: ${beList}</div>
@@ -1442,10 +1551,215 @@ function _renderEstCard(s, vto, idx) {
   </div>`;
 }
 
+// ── VISUALIZADOR ──────────────────────────────────────────────────────────────
+
+function _bsPrice(S, K, T, r, sigma, tipo) {
+  if (T <= 0 || sigma <= 0) return tipo==='CALL' ? Math.max(0,S-K) : Math.max(0,K-S);
+  const d1 = (Math.log(S/K) + (r + 0.5*sigma*sigma)*T) / (sigma*Math.sqrt(T));
+  const d2 = d1 - sigma*Math.sqrt(T);
+  const N  = x => { const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+    const sign=x<0?-1:1,t=1/(1+p*Math.abs(x)); const y=1-((((a5*t+a4)*t+a3)*t+a2)*t+a1)*t*Math.exp(-x*x); return 0.5*(1+sign*y); };
+  if (tipo==='CALL') return S*N(d1) - K*Math.exp(-r*T)*N(d2);
+  return K*Math.exp(-r*T)*N(-d2) - S*N(-d1);
+}
+
+function _stratPnlAtST(legs, S, T_now, r, spot) {
+  // PnL de la estrategia con T días restantes: usa BS para valorar cada pata
+  let pnl = 0;
+  for (const l of legs) {
+    const vi   = (l.vi || 60) / 100;
+    const K    = l.strike;
+    const prima = l.prima;
+    const val  = T_now > 0 ? _bsPrice(S, K, T_now, r, vi, l.tipo) : Math.max(0, l.tipo==='CALL'?S-K:K-S);
+    pnl += l.side==='long' ? (val - prima) : (prima - val);
+  }
+  return pnl;
+}
+
+function _renderVisualizador(s) {
+  const el = document.getElementById('content');
+  const lotes  = EST_STATE.budget || 1;
+  const vto    = s._vto;
+  const dias   = s.dias_vto || 16;
+  const spot   = s.spot || 0;
+  const r      = 0.23;
+
+  // Fechas del heatmap: hoy + intervalos hasta vencimiento
+  const today = new Date();
+  const vtoDate = vto === '2026-10-16' ? new Date('2026-10-16') : new Date('2026-12-18');
+  const totalDias = Math.max(1, Math.round((vtoDate - today) / 86400000));
+
+  // Columnas de tiempo (máx 8)
+  const nCols = Math.min(8, totalDias);
+  const colDays = [];
+  for (let i = 0; i <= nCols; i++) {
+    const d = Math.round(totalDias * (1 - i / nCols));
+    colDays.push(d);
+  }
+
+  // Rango de precios (filas): spot ±15% en 15 pasos
+  const nRows = 15;
+  const prices = [];
+  for (let i = nRows; i >= -nRows; i--) {
+    prices.push(Math.round(spot * (1 + i * 0.01) / 10) * 10);
+  }
+
+  // Calcular P&L para cada celda
+  function cellPnl(S, daysLeft) {
+    const T = daysLeft / 365;
+    return _stratPnlAtST(s.legs, S, T, r, spot);
+  }
+
+  // KPIs
+  const costoLote = (s.costo_lote != null ? s.costo_lote : s.costo_neto * 100);
+  const esDébito  = costoLote >= 0;
+  const beList    = s.break_evens?.length ? s.break_evens.map(b => '$'+fmt(b)).join(' / ') : '—';
+
+  // Tabs
+  const tabs = [
+    { id: 'pnl',     l: 'P&L $'       },
+    { id: 'pct',     l: 'P&L %'       },
+    { id: 'maxrisk', l: '% Max Risk'  },
+  ];
+
+  el.innerHTML = `
+  <div class="vis-overlay" id="vis-overlay">
+    <div class="vis-header">
+      <button class="vis-back" id="vis-back">← Volver</button>
+      <div>
+        <div class="vis-title">${esc(s.nombre)}</div>
+        <div class="vis-subtitle">${esc(s.subyacente)} · ${vto==='2026-10-16'?'Octubre':'Diciembre'} · ${dias} días · ${CAT_LABEL[s.categoria]||s.categoria}</div>
+      </div>
+      <div class="vis-kpis">
+        <div class="vis-kpi">
+          <div class="k-lbl">${esDébito?'Net Débito':'Net Crédito'}</div>
+          <div class="k-val" style="color:${esDébito?'#c0392b':'#3ab07a'}">$${fmt(Math.abs(costoLote))}/lote</div>
+        </div>
+        <div class="vis-kpi">
+          <div class="k-lbl">Max Profit</div>
+          <div class="k-val pos">${!s.max_profit||s.max_profit>1e7?'Ilimitado':'$'+fmt(s.max_profit)}</div>
+        </div>
+        <div class="vis-kpi">
+          <div class="k-lbl">Max Loss</div>
+          <div class="k-val neg">${!s.max_risk||s.max_risk<-1e7?'Ilimitado':'$'+fmt(Math.abs(s.max_risk))}</div>
+        </div>
+        <div class="vis-kpi">
+          <div class="k-lbl">Chance</div>
+          <div class="k-val" style="color:${s.chance>=60?'#3ab07a':s.chance>=40?'#C9960A':'#c0392b'}">${s.chance!=null?s.chance.toFixed(1)+'%':'—'}</div>
+        </div>
+        <div class="vis-kpi">
+          <div class="k-lbl">Break-even</div>
+          <div class="k-val gold">${beList}</div>
+        </div>
+        <div class="vis-kpi">
+          <div class="k-lbl">Lotes</div>
+          <div class="k-val">${lotes}</div>
+        </div>
+      </div>
+    </div>
+    <div class="vis-body">
+      <div class="vis-tabs">
+        ${tabs.map(t => `<button class="vis-tab${EST_STATE.visTab===t.id?' active':''}" data-tab="${t.id}">${t.l}</button>`).join('')}
+      </div>
+      <div class="vis-legs-detail">
+        ${(s.legs||[]).map(l => `
+        <div class="vis-leg-card">
+          <div class="vl-name" style="color:${l.side==='long'?'#3ab07a':'#c0392b'}">${l.side==='long'?'▲ COMPRA':'▼ VENTA'} ${l.tipo}</div>
+          <div class="vl-row">Strike <span>$${fmt(l.strike)}</span></div>
+          <div class="vl-row">Prima <span>$${fmt(l.prima)}/acc · $${fmt(l.prima*100)}/lote</span></div>
+          ${l.bid&&l.ask?`<div class="vl-row">Bid/Ask <span>$${fmt(l.bid)} / $${fmt(l.ask)}</span></div>`:''}
+        </div>`).join('')}
+      </div>
+      <div class="vis-heatmap" id="vis-heatmap">
+        ${_buildHeatmap(prices, colDays, cellPnl, s, lotes, EST_STATE.visTab)}
+      </div>
+    </div>
+  </div>`;
+
+  document.getElementById('vis-back').addEventListener('click', () => {
+    EST_STATE.visStrat = null;
+    renderEstrategias();
+    requestAnimationFrame(() => _drawAllPayoffs(EST_STATE.data));
+  });
+
+  document.querySelector('.vis-tabs').addEventListener('click', e => {
+    const btn = e.target.closest('.vis-tab');
+    if (!btn) return;
+    EST_STATE.visTab = btn.dataset.tab;
+    document.querySelectorAll('.vis-tab').forEach(b => b.classList.toggle('active', b===btn));
+    document.getElementById('vis-heatmap').innerHTML = _buildHeatmap(prices, colDays, cellPnl, s, lotes, EST_STATE.visTab);
+  });
+}
+
+function _buildHeatmap(prices, colDays, cellPnl, s, lotes, tab) {
+  const maxLoss   = s.max_risk   || -1;
+  const maxProfit = s.max_profit || 1;
+  const spot      = s.spot || 0;
+
+  function cellColor(pnl) {
+    if (pnl >= 0) {
+      const intensity = Math.min(1, pnl / (Math.abs(maxProfit) || 1));
+      const g = Math.round(80 + 96 * intensity);
+      return `rgba(30,${g},50,0.85)`;
+    } else {
+      const intensity = Math.min(1, Math.abs(pnl) / (Math.abs(maxLoss) || 1));
+      const r = Math.round(80 + 112 * intensity);
+      return `rgba(${r},30,30,0.85)`;
+    }
+  }
+
+  function cellVal(pnl, S) {
+    const pnlLote = pnl * 100 * lotes;
+    if (tab === 'pnl')     return (pnlLote >= 0 ? '+' : '') + '$' + fmt(pnlLote);
+    if (tab === 'pct') {
+      const base = Math.abs(s.costo_lote || 1) * lotes || 1;
+      const pct  = pnlLote / base * 100;
+      return (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+    }
+    if (tab === 'maxrisk') {
+      const mr = Math.abs(maxLoss * 100 * lotes) || 1;
+      const pct = pnlLote / mr * 100;
+      return (pct >= 0 ? '+' : '') + pct.toFixed(0) + '%';
+    }
+    return '';
+  }
+
+  // Encabezado de columnas
+  const today = new Date();
+  function daysToLabel(d) {
+    if (d === 0) return 'Vto';
+    const dt = new Date(today.getTime() + (s.dias_vto - d) * 86400000);
+    return `${dt.getDate()}/${dt.getMonth()+1}`;
+  }
+
+  let html = '<table><thead><tr>';
+  html += '<th class="sticky-col">Precio</th>';
+  colDays.forEach(d => { html += `<th>${daysToLabel(d)}<br><span style="color:#706858;font-size:8px">${d}d</span></th>`; });
+  html += '</tr></thead><tbody>';
+
+  for (const S of prices) {
+    const isSpot = Math.abs(S - spot) / spot < 0.015;
+    html += `<tr${isSpot?' style="outline:1px solid #C9960A44"':''}>`;
+    html += `<td class="price-col"${isSpot?' style="color:#C9960A"':''}>${isSpot?'▶ ':''}\$${fmt(S)}</td>`;
+    for (const d of colDays) {
+      const pnl = cellPnl(S, d);
+      const col = cellColor(pnl);
+      const txt = cellVal(pnl, S);
+      const txtColor = pnl >= 0 ? '#a0e0b0' : '#e0a0a0';
+      html += `<td style="background:${col};color:${txtColor}">${txt}</td>`;
+    }
+    html += '</tr>';
+  }
+
+  html += '</tbody></table>';
+  return html;
+}
+
 function _drawAllPayoffs(data) {
   const estrategias = data.estrategias || {};
   for (const [vto, strats] of Object.entries(estrategias)) {
-    strats.forEach((s, idx) => {
+    const sorted = _scoreStrats(strats);
+    sorted.forEach((s, idx) => {
       const canvasId = `payoff-${vto.replace(/-/g,'')}-${idx}`;
       const canvas = document.getElementById(canvasId);
       if (!canvas || !s.payoff?.length) return;
@@ -1469,88 +1783,72 @@ function _drawPayoff(canvas, s) {
   const cW  = W - pad.l - pad.r;
   const cH  = H - pad.t - pad.b;
 
-  const pts    = s.payoff;
-  const sVals  = pts.map(p => p.s);
-  const pVals  = pts.map(p => p.pnl);
-  const sMin = Math.min(...sVals), sMax = Math.max(...sVals);
-  const pMin = Math.min(...pVals), pMax = Math.max(...pVals);
-  const pRange = Math.max(Math.abs(pMin), Math.abs(pMax)) || 1;
+  const pts   = s.payoff;
+  const sVals = pts.map(p => p.s);
+  const pVals = pts.map(p => p.pnl);
+  const sMin  = Math.min(...sVals), sMax = Math.max(...sVals);
+  const pRange = Math.max(Math.abs(Math.min(...pVals)), Math.abs(Math.max(...pVals))) || 1;
 
-  const xs = v => pad.l + (sMax === sMin ? cW/2 : (v - sMin) / (sMax - sMin) * cW);
-  const ys = v => pad.t + cH - ((v + pRange) / (2 * pRange) * cH);
+  const xs = v => pad.l + (sMax===sMin ? cW/2 : (v-sMin)/(sMax-sMin)*cW);
+  const ys = v => pad.t + cH - ((v+pRange)/(2*pRange)*cH);
   const y0 = ys(0);
 
-  // Fondo
-  ctx.fillStyle = '#0e0d0a';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#0e0d0a'; ctx.fillRect(0,0,W,H);
 
   // Eje cero
-  ctx.strokeStyle = '#2a2510';
-  ctx.lineWidth = 0.8;
-  ctx.beginPath(); ctx.moveTo(pad.l, y0); ctx.lineTo(W - pad.r, y0); ctx.stroke();
+  ctx.strokeStyle='#2a2510'; ctx.lineWidth=0.8;
+  ctx.beginPath(); ctx.moveTo(pad.l,y0); ctx.lineTo(W-pad.r,y0); ctx.stroke();
 
   // Spot
   if (s.spot) {
-    const xSpot = xs(s.spot);
-    ctx.strokeStyle = 'rgba(201,150,10,0.4)';
-    ctx.lineWidth = 0.8;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath(); ctx.moveTo(xSpot, pad.t); ctx.lineTo(xSpot, H - pad.b); ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.strokeStyle='rgba(201,150,10,0.4)'; ctx.lineWidth=0.8; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(xs(s.spot),pad.t); ctx.lineTo(xs(s.spot),H-pad.b); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // Target price
+  const tgt = EST_STATE.targetPrice;
+  if (tgt && tgt >= sMin && tgt <= sMax) {
+    ctx.strokeStyle='rgba(155,89,182,0.7)'; ctx.lineWidth=1; ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.moveTo(xs(tgt),pad.t); ctx.lineTo(xs(tgt),H-pad.b); ctx.stroke(); ctx.setLineDash([]);
+    // Punto en la curva
+    const tgtPnl = pts.reduce((b,p)=>Math.abs(p.s-tgt)<Math.abs(b.s-tgt)?p:b).pnl;
+    ctx.beginPath(); ctx.arc(xs(tgt),ys(tgtPnl),4,0,Math.PI*2);
+    ctx.fillStyle='rgba(155,89,182,0.9)'; ctx.fill();
   }
 
   // Break-evens
-  (s.break_evens || []).forEach(be => {
-    const xBe = xs(be);
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 0.6;
-    ctx.setLineDash([2, 4]);
-    ctx.beginPath(); ctx.moveTo(xBe, pad.t); ctx.lineTo(xBe, H - pad.b); ctx.stroke();
-    ctx.setLineDash([]);
+  (s.break_evens||[]).forEach(be => {
+    ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=0.6; ctx.setLineDash([2,4]);
+    ctx.beginPath(); ctx.moveTo(xs(be),pad.t); ctx.lineTo(xs(be),H-pad.b); ctx.stroke(); ctx.setLineDash([]);
   });
 
-  // Fill profit/loss
-  ctx.beginPath();
-  ctx.moveTo(xs(pts[0].s), y0);
-  pts.forEach(p => ctx.lineTo(xs(p.s), ys(p.pnl)));
-  ctx.lineTo(xs(pts[pts.length - 1].s), y0);
-  ctx.closePath();
-  // Gradient
-  const grad = ctx.createLinearGradient(0, pad.t, 0, H - pad.b);
-  grad.addColorStop(0, 'rgba(58,176,122,0.25)');
-  grad.addColorStop(0.5, 'rgba(58,176,122,0.05)');
-  grad.addColorStop(1, 'rgba(192,57,43,0.20)');
-  ctx.fillStyle = grad;
-  ctx.fill();
+  // Fill
+  ctx.beginPath(); ctx.moveTo(xs(pts[0].s),y0);
+  pts.forEach(p=>ctx.lineTo(xs(p.s),ys(p.pnl)));
+  ctx.lineTo(xs(pts[pts.length-1].s),y0); ctx.closePath();
+  const grad=ctx.createLinearGradient(0,pad.t,0,H-pad.b);
+  grad.addColorStop(0,'rgba(58,176,122,0.25)'); grad.addColorStop(0.5,'rgba(58,176,122,0.05)'); grad.addColorStop(1,'rgba(192,57,43,0.20)');
+  ctx.fillStyle=grad; ctx.fill();
 
   // Línea payoff
   ctx.beginPath();
-  pts.forEach((p, i) => {
-    const x = xs(p.s), y = ys(p.pnl);
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  });
-  ctx.strokeStyle = '#C9960A';
-  ctx.lineWidth = 2;
-  ctx.stroke();
+  pts.forEach((p,i)=>{ const x=xs(p.s),y=ys(p.pnl); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); });
+  ctx.strokeStyle='#C9960A'; ctx.lineWidth=2; ctx.stroke();
 
-  // Labels eje Y
-  ctx.fillStyle = '#706858';
-  ctx.font = `${8 * (dpr > 1 ? 1 : 1)}px monospace`;
-  ctx.textAlign = 'right';
-  [pRange, 0, -pRange].forEach(v => {
-    const y = ys(v);
-    const txt = v === 0 ? '0' : (v > 0 ? '+' : '') + fmtM(v);
-    ctx.fillText(txt, pad.l - 3, y + 3);
+  // Labels Y
+  ctx.fillStyle='#706858'; ctx.font='8px monospace'; ctx.textAlign='right';
+  [pRange,0,-pRange].forEach(v=>{
+    const y=ys(v), txt=v===0?'0':(v>0?'+':'')+fmtM(v);
+    ctx.fillText(txt,pad.l-3,y+3);
   });
-
-  // Labels eje X (3 puntos)
-  ctx.textAlign = 'center';
-  [sMin, s.spot || (sMin + sMax)/2, sMax].forEach(v => {
-    const x = xs(v);
-    const lbl = v >= 1000 ? (v/1000).toFixed(1)+'k' : v.toFixed(0);
-    ctx.fillText('$'+lbl, x, H - pad.b + 12);
+  // Labels X
+  ctx.textAlign='center';
+  [sMin,s.spot||(sMin+sMax)/2,sMax].forEach(v=>{
+    const lbl=v>=1000?(v/1000).toFixed(1)+'k':v.toFixed(0);
+    ctx.fillText('$'+lbl,xs(v),H-pad.b+12);
   });
 }
+
 
 // ── EXPORT CSV ─────────────────────────────────────────────────────────────────
 function exportCsv() {
