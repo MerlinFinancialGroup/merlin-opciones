@@ -204,6 +204,22 @@ def _pg_init():
                 PRIMARY KEY (fecha, symbol)
             );
         """)
+        # Migraciones — ALTER TABLE IF NOT EXISTS la columna para tablas ya creadas
+        migrations = [
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS moneyness TEXT;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS delta NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS gamma NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS theta NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS vega NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS rho NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS tasa_libre NUMERIC;",
+            "ALTER TABLE bid_ask_cierre ADD COLUMN IF NOT EXISTS ultimo NUMERIC;",
+        ]
+        for m in migrations:
+            try:
+                cur.execute(m)
+            except Exception as me:
+                logger.warning(f"Migración omitida: {me}")
         conn.commit(); cur.close(); conn.close()
         logger.info("PG init OK")
     except Exception as e:
