@@ -232,6 +232,15 @@ def _pg_init():
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS theta NUMERIC;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS vega NUMERIC;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS rho NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS subyacente TEXT;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS tipo TEXT;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS strike NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS vencimiento DATE;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS bid_cierre NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS ask_cierre NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS qty_bid_cierre NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS qty_ask_cierre NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS iv_source TEXT;",
             # bid_ask_cierre
             "ALTER TABLE bid_ask_cierre ADD COLUMN IF NOT EXISTS ultimo NUMERIC;",
         ]
