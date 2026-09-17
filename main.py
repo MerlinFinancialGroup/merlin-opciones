@@ -206,13 +206,33 @@ def _pg_init():
         """)
         # Migraciones — ALTER TABLE IF NOT EXISTS la columna para tablas ya creadas
         migrations = [
+            # opciones_cierres — columnas que pueden faltar en tablas creadas antes
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS moneyness TEXT;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS dias_vto INTEGER;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS precio_suby NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS apertura NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS minimo NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS maximo NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS var_pct NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS volumen_ars NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS cant_ops INTEGER;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS open_interest INTEGER;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS var_oi_pct NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS precio_teorico NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS desvio_teorico NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS valor_temporal NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS vi_iamc NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS vi_calc NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS vi_bid NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS vi_offer NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS vol_hist_40r NUMERIC;",
+            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS tasa_libre NUMERIC;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS delta NUMERIC;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS gamma NUMERIC;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS theta NUMERIC;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS vega NUMERIC;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS rho NUMERIC;",
-            "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS tasa_libre NUMERIC;",
+            # bid_ask_cierre
             "ALTER TABLE bid_ask_cierre ADD COLUMN IF NOT EXISTS ultimo NUMERIC;",
         ]
         for m in migrations:
