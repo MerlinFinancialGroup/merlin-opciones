@@ -261,7 +261,7 @@ def _pg_save_cierres(fecha: str):
     saved = 0
     try:
         conn = _pg_conn(); cur = conn.cursor()
-        TASA_VTO = {"2026-10-16": 0.2316, "2026-12-18": 0.2418}
+        TASA_VTO = {k: (_tasas_rt.get(k) or v) for k, v in {"2026-10-16": 0.2287, "2026-12-18": 0.2418}.items()}
         for sym, snap in _veta_md.items():
             ultimo = snap.get("ultimo")
             if not ultimo: continue
@@ -274,7 +274,7 @@ def _pg_save_cierres(fecha: str):
             vi_calc = None
             if S and K and dias and dias > 0 and tipo:
                 T = dias / 365.0
-                r_rate = TASA_VTO.get(vto, 0.2316)
+                r_rate = TASA_VTO.get(vto, 0.2287)
                 vi_calc = _calc_iv(ultimo, S, K, T, r_rate, tipo)
             # Bid/ask del cierre de Veta
             bid_c = snap.get("bid")
@@ -411,7 +411,7 @@ def _pg_save_cierres_iamc(rows: list, fecha: str):
     saved = 0
     try:
         conn = _pg_conn(); cur = conn.cursor()
-        TASA_VTO = {"2026-10-16": 0.2316, "2026-12-18": 0.2418}
+        TASA_VTO = {k: (_tasas_rt.get(k) or v) for k, v in {"2026-10-16": 0.2287, "2026-12-18": 0.2418}.items()}
         for r in rows:
             sym = r.get("symbol")
             if not sym: continue
@@ -421,7 +421,7 @@ def _pg_save_cierres_iamc(rows: list, fecha: str):
             tipo = r.get("tipo")
             vto  = r.get("vencimiento")
             ultimo = r.get("ultimo_precio")
-            r_rate = TASA_VTO.get(vto, 0.2316)
+            r_rate = TASA_VTO.get(vto, 0.2287)
             T = dias / 365.0 if dias and dias > 0 else None
             vi_calc = None
             if ultimo and S and K and T and tipo:
@@ -780,10 +780,7 @@ def _enrich_iv(rows: list) -> list:
        (o la IV ATM del subyacente como fallback) y lo asigna como precio_teorico.
        La vol_implicita en ese caso será la VH usada (precio teórico = smile plano).
     """
-    TASA_VTO = {
-        "2026-10-16": 0.2316,
-        "2026-12-18": 0.2418,
-    }
+    TASA_VTO = {k: (_tasas_rt.get(k) or v) for k, v in {"2026-10-16": 0.2287, "2026-12-18": 0.2418}.items()}
 
     # Pre-calcular IV ATM por subyacente (para usar como fallback de sigma)
     iv_atm_by_suby = {}
@@ -808,7 +805,7 @@ def _enrich_iv(rows: list) -> list:
         vto   = r.get("vencimiento")
         sub   = r.get("subyacente", "")
         tasa_pct = r.get("tasa_libre")
-        r_rate = (tasa_pct / 100) if tasa_pct else TASA_VTO.get(vto, 0.2316)
+        r_rate = (tasa_pct / 100) if tasa_pct else TASA_VTO.get(vto, 0.2287)
 
         if not S or S <= 0 or not K or K <= 0 or not dias or dias <= 0:
             r["iv_source"] = None
@@ -1736,7 +1733,7 @@ async def get_cadena(
         rows = [r for r in rows if r.get("vencimiento") == vencimiento]
 
     # Enriquecer con bid/ask y VI de Veta si hay books disponibles
-    TASA_VTO = {"2026-10-16": 0.2316, "2026-12-18": 0.2418}
+    TASA_VTO = {k: (_tasas_rt.get(k) or v) for k, v in {"2026-10-16": 0.2287, "2026-12-18": 0.2418}.items()}
     result = []
     # Bid/ask del cierre: mostrar si son las 17-23hs de hoy o antes de las 10am del día siguiente
     now_arg = datetime.now(TZ_ARG)
@@ -1806,7 +1803,7 @@ async def get_cadena(
             dias = row.get("dias_vto")
             tipo_op = row.get("tipo")
             vto  = row.get("vencimiento")
-            r_rate = TASA_VTO.get(vto, 0.2316)
+            r_rate = TASA_VTO.get(vto, 0.2287)
             if S and K and dias and dias > 0:
                 T = dias / 365.0
                 if bid:    row["vi_bid"]    = _calc_iv(bid,    S, K, T, r_rate, tipo_op)
@@ -1832,7 +1829,11 @@ async def get_cadena(
 
         result.append(row)
 
+    tasa_oct = _tasas_rt.get("2026-10-16")
+    tasa_dic = _tasas_rt.get("2026-12-18")
     return {"fecha": state["fecha"], "total": len(result), "data": result,
+            "tasas_rt": {"oct": round(tasa_oct*100,2) if tasa_oct else None,
+                         "dic": round(tasa_dic*100,2) if tasa_dic else None},
             "cierre_ba": mostrar_cierre_ba, "cierre_ba_fecha": state.get("_cierre_ba_fecha")}
 
 @app.get("/api/veta/debug-md")
@@ -1887,8 +1888,62 @@ VETA_WS   = "wss://matriz.bcch.xoms.com.ar/ws"
 # { "bm_MERV_GFGC7000OC_24hs": { bid, ask, qty_bid, qty_ask, ts } }
 _veta_books: dict = {}
 _veta_md: dict    = {}   # "GFGV6000OC" → snapshot RT del M:
+
+# Instrumentos de tasa libre de riesgo por vencimiento de opciones
+# TEM de emisión y fecha de vencimiento para calcular valor técnico al vto
+LECAP_CONFIG = {
+    "2026-10-16": {"ticker": "S3006",  "sec_id": "bm_MERV_S3006_CI",  "tem": 0.0255, "fecha_vto_lecap": "2026-10-30"},
+    "2026-12-18": {"ticker": "T30J6",  "sec_id": "bm_MERV_T30J6_CI",  "tem": 0.0255, "fecha_vto_lecap": "2026-12-30"},
+}
+_tasas_rt: dict = {}  # vencimiento_opcion → tasa_anual_efectiva en tiempo real
 import collections as _collections
 _veta_raw_m = _collections.deque(maxlen=80)
+
+def _calc_tasa_lecap(precio_mercado: float, vto_opcion: str) -> float | None:
+    """Calcula la tasa anual efectiva implícita desde el precio de mercado de la LECAP.
+    precio_mercado: precio por cada $100 VN (ej: 131.885)
+    Retorna TEA como decimal (ej: 0.2287)
+    """
+    cfg = LECAP_CONFIG.get(vto_opcion)
+    if not cfg or not precio_mercado or precio_mercado <= 0:
+        return None
+    try:
+        from datetime import date as _date
+        hoy = datetime.now(TZ_ARG).date()
+        vto_lecap = _date.fromisoformat(cfg["fecha_vto_lecap"])
+        dias = (vto_lecap - hoy).days
+        if dias <= 0: return None
+        # Valor técnico al vencimiento: capitaliza desde emisión con TEM
+        # Como capitaliza continuamente, usamos el precio de mercado directamente
+        # precio cotiza por $100 VN, al vto paga el valor técnico (≈ precio al vto)
+        # Usamos: precio_hoy * (1 + r_periodo) = valor_vto
+        # Para simplificar: asumimos que el valor técnico al vto es 1000 por VN 1000
+        # y precio_mercado es por VN 100
+        # Entonces: r_anual = (VN/precio * 100)^(365/dias) - 1
+        # Pero la LECAP capitaliza desde emisión, así que el valor al vto > VN
+        # Lo correcto: usar el precio para estimar la TEA del período restante
+        # comparando con el valor técnico esperado
+        tem = cfg["tem"]
+        # Aproximar meses desde emisión hasta vto (≈ 12 meses para S30O6)
+        # Valor técnico ≈ 1000 * (1+TEM)^12 para una LECAP anual
+        # Usamos interpolación: valor_vto = precio_mercado / precio_emision * VN
+        # Más simple y preciso: calcular directamente desde precio de mercado
+        # Rendimiento para el período restante:
+        # Si comprás a precio_mercado (por cada 100) y al vto recibís valor_tecnico
+        # Estimamos valor técnico usando TEM desde la fecha de emisión
+        # Fecha de emisión ≈ 1 año antes del vto
+        from datetime import date as _date
+        fecha_emision_aprox = _date(vto_lecap.year - 1, vto_lecap.month, vto_lecap.day)
+        dias_total = (vto_lecap - fecha_emision_aprox).days
+        meses_total = dias_total / 30.5
+        valor_tecnico_vto = 100 * (1 + tem) ** meses_total  # por cada $100 VN
+        # TEA implícita para el período restante
+        r_periodo = (valor_tecnico_vto / precio_mercado) - 1
+        tea = (1 + r_periodo) ** (365 / dias) - 1
+        return round(tea, 6)
+    except Exception as e:
+        print(f"[LECAP] Error calc tasa: {e}")
+        return None
 
 def _norm_veta_sym(security_id: str) -> str:
     """'bm_MERV_GFGV6000OC_CI' → 'GFGV6000OC'"""
@@ -1923,15 +1978,36 @@ def _dispatch_veta(item: str):
         snap = _parse_veta_m(item[2:])
         if snap and snap.get("symbol"):
             _veta_md[snap["symbol"]] = snap
-            # También actualizar _veta_books para compatibilidad
             sec_id = snap["security_id"]
             if sec_id not in _veta_books: _veta_books[sec_id] = {}
             if snap.get("bid"):    _veta_books[sec_id]["bid"]    = snap["bid"]
             if snap.get("ask"):    _veta_books[sec_id]["ask"]    = snap["ask"]
             if snap.get("ultimo"): _veta_books[sec_id]["ultimo"] = snap["ultimo"]
+            # Detectar LECAPs de referencia y actualizar tasas RT
+            for vto_op, cfg in LECAP_CONFIG.items():
+                if snap["symbol"].upper() == cfg["ticker"].upper():
+                    precio = snap.get("ultimo") or snap.get("bid") or snap.get("ask")
+                    if precio and precio > 0:
+                        tea = _calc_tasa_lecap(precio, vto_op)
+                        if tea:
+                            _tasas_rt[vto_op] = tea
+                            print(f"[LECAP] {cfg['ticker']} precio={precio} → TEA={tea*100:.2f}%")
     elif item.startswith("B:"):
         sec_id, book = _parse_book_msg(item[2:])
-        if sec_id and book: _veta_books[sec_id] = book
+        if sec_id and book:
+            _veta_books[sec_id] = book
+            # También verificar si es LECAP y actualizar tasa con el mid del book
+            for vto_op, cfg in LECAP_CONFIG.items():
+                if sec_id == cfg["sec_id"]:
+                    bids = book.get("bids", [])
+                    asks = book.get("asks", [])
+                    bid_p = bids[0]["price"] if bids else None
+                    ask_p = asks[0]["price"] if asks else None
+                    if bid_p and ask_p:
+                        mid = (bid_p + ask_p) / 2
+                        tea = _calc_tasa_lecap(mid, vto_op)
+                        if tea:
+                            _tasas_rt[vto_op] = tea
 
 _veta_ws_task = None
 _veta_session = {"id": None, "conn_id": None, "csrf": None}
@@ -2063,7 +2139,11 @@ async def _veta_ws_loop():
                     book_topics = [f"book.{_symbol_to_security_id(s)}" for s in lote]
                     await ws.send(json.dumps({"_req": "S", "topicType": "book", "topics": book_topics, "replace": False}))
                     await asyncio.sleep(0.05)
-                print(f"[Veta WS] Suscrito a {len(todas)} opciones (md + book)")
+                # Suscribir LECAPs de referencia de tasa
+                lecap_sec_ids = [cfg["sec_id"] for cfg in LECAP_CONFIG.values()]
+                await ws.send(json.dumps({"_req": "S", "topicType": "md",   "topics": [f"md.{s}"   for s in lecap_sec_ids], "replace": False}))
+                await ws.send(json.dumps({"_req": "S", "topicType": "book", "topics": [f"book.{s}" for s in lecap_sec_ids], "replace": False}))
+                print(f"[Veta WS] Suscrito a {len(todas)} opciones (md + book) + {len(lecap_sec_ids)} LECAPs tasa")
 
                 msg_count = 0
                 async for message in ws:

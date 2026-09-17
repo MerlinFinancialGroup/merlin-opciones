@@ -427,6 +427,7 @@ async function loadCadena(suby, silent = false) {
     const { rows, dropped } = sanitizeCadena(d.data || []);
     state.cadena = rows;
     state.dropped = dropped;
+    state.tasasRt = d.tasas_rt || {};
 
     const json = JSON.stringify(state.cadena);
     const unchanged = silent && json === lastCadenaJson;
@@ -478,7 +479,11 @@ function updateSubyHeader(suby) {
     <div class="meta-item">Vol ARS: <span>${fmtM(s.volumen_ars)}</span></div>
     <div class="meta-item">OI: <span>${fmtN(s.open_interest)}</span></div>
     ${pcTxt!=null?`<div class="meta-item">Put/Call: <span class="${pcCls}">${pcTxt}</span></div>`:''}
-    <div class="meta-item">Tasa libre: <span>${tasa!=null?tasa+'%':'—'}</span></div>
+    <div class="meta-item">Tasa libre: <span>${
+      state.tasasRt?.oct != null
+        ? state.tasasRt.oct.toFixed(2)+'% <small style=\"color:#C9960A\" title=\"S30O6 RT\">★</small>'
+        : (tasa!=null?tasa+'%':'—')
+    }</span></div>
     <div class="meta-item">Días vto: <span>${diasTxt}</span></div>
     ${state.dropped>0?`<div class="meta-item" title="Filas descartadas por datos inservibles (sin strike/tipo recuperable)">Inválidas ocultas: <span class="dn">${state.dropped}</span></div>`:''}
   `;
@@ -617,11 +622,11 @@ function renderSmile() {
   // Leyenda (necesaria antes del early-redraw)
   const legendItems = [];
   if(showCalls){
-    legendItems.push(['Call Oper','rgba(220,220,220,0.9)',false],['Call IAMC','rgba(180,130,255,0.9)',false],['Call Smile','rgba(80,180,255,0.8)',true]);
+    legendItems.push(['Call Oper','rgba(220,220,220,0.9)',false],['Call IAMC','rgba(180,130,255,0.9)',false],['Call Teór','rgba(80,180,255,0.85)',true]);
     if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
   if(showPuts){
-    legendItems.push(['Put Oper','rgba(220,220,0,0.95)',false],['Put IAMC','rgba(255,160,50,0.9)',false],['Put Smile','rgba(80,100,255,0.8)',true]);
+    legendItems.push(['Put Oper','rgba(220,220,0,0.95)',false],['Put IAMC','rgba(255,160,50,0.9)',false],['Put Teór','rgba(80,100,255,0.85)',true]);
     if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
 
@@ -820,54 +825,26 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     }
     return mid*100;
   }
-
-  function drawTeoricoBS(pts, color, tipo) {
-    if(!spot||spot<=0) return;
-    // Usar IV ATM como sigma flat
-    const atmPt = pts.reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b, null);
-    if(!atmPt||!(atmPt._iv_ult>0)) return;
-    const sigmaFlat = atmPt._iv_ult / 100;
-    // Tasa del primer punto con dato
-    const r0 = (pts.find(r=>r.tasa_libre>0)?.tasa_libre||16.2) / 100;
-    const T0 = (pts.find(r=>r.dias_vto>0)?.dias_vto||16) / 365;
-
-    // Calcular precio teórico BS para cada strike y de ahí la IV
-    // Con sigma flat el resultado ES sigmaFlat — no tiene sentido
-    // En cambio: calcular precio BS con sigmaFlat y luego recalcular IV → siempre da sigmaFlat
-    // Lo correcto: usar la curva de volatilidad ajustada por moneyness (skew proxy)
-    // Usamos: sigma(K) = sigmaFlat * (1 + skewCoeff * ln(K/spot))
-    // donde skewCoeff se estima desde los datos reales
-    const validPts = pts.filter(r=>r._iv_ult>0&&r.strike>0&&(r.valor_temporal==null||r.valor_temporal>0)&&Math.abs((r.strike-spot)/(spot||1))<0.4);
-    if(validPts.length < 3) return;
-
-    // Estimar skew lineal por regresión simple
-    let sx=0,sy=0,sxy=0,sx2=0,n=validPts.length;
-    validPts.forEach(r=>{
-      const x=Math.log(r.strike/spot), y=r._iv_ult;
-      sx+=x; sy+=y; sxy+=x*y; sx2+=x*x;
-    });
-    const skew = n>1 ? (n*sxy-sx*sy)/(n*sx2-sx*sx) : 0;
-    const intercept = (sy-skew*sx)/n;
-
-    // Generar curva suavizada en 60 puntos
-    const kFrom = Math.max(xMin, spot*0.5);
-    const kTo   = Math.min(xMax, spot*2.0);
-    const curvePts = [];
-    for(let i=0;i<=60;i++){
-      const k = kFrom+(kTo-kFrom)*i/60;
-      const x = Math.log(k/spot);
-      const ivTeo = intercept + skew*x;  // IV teórica por regresión
-      if(ivTeo>0 && ivTeo<300) curvePts.push({x:xs(k), y:ys(ivTeo)});
-    }
-    if(curvePts.length<3) return;
-    ctx.strokeStyle=color; ctx.lineWidth=1.8; ctx.setLineDash([5,3]);
+  // ── Curva IV Teórica: vol_implicita del IAMC por strike ──
+  function drawTeoricoIAMC(pts, color) {
+    const valid = pts
+      .filter(r => r.vol_implicita > 0 && r.strike >= xMin && r.strike <= xMax
+                && (r.valor_temporal == null || r.valor_temporal > 0)
+                && r.vol_implicita < 200)
+      .sort((a,b) => a.strike - b.strike);
+    if(valid.length < 3) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.setLineDash([5,3]);
     ctx.beginPath();
-    drawCatmullRom(ctx, curvePts, 0.5);
+    drawCatmullRom(ctx, valid.map(r => ({x: xs(r.strike), y: ys(r.vol_implicita)})), 0.5);
     ctx.stroke(); ctx.setLineDash([]);
+    valid.forEach(r => {
+      ctx.beginPath(); ctx.arc(xs(r.strike), ys(r.vol_implicita), 2, 0, Math.PI*2);
+      ctx.fillStyle = color; ctx.fill();
+    });
   }
 
-  if(showCalls) drawTeoricoBS(calls, 'rgba(80,180,255,0.85)', 'CALL');
-  if(showPuts)  drawTeoricoBS(puts,  'rgba(80,100,255,0.85)', 'PUT');
+  if(showCalls) drawTeoricoIAMC(calls, 'rgba(80,180,255,0.85)');
+  if(showPuts)  drawTeoricoIAMC(puts,  'rgba(80,100,255,0.85)');
 
   // ── Bandas gaussianas ──
   const atmRowG = [...calls,...puts].reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null);
