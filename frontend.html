@@ -1530,7 +1530,7 @@ function _renderEstCard(s, vto, idx) {
 
   const legsHtml = (s.legs || []).map(l =>
     `<div class="est-leg ${l.side}">${l.side==='long'?'▲':'▼'} ${l.tipo} $${fmt(l.strike)} · $${fmt(l.prima)}/acc${l.bid&&l.ask?` <span style="color:#706858">(${fmt(l.bid)}/${fmt(l.ask)})</span>`:''}</div>`
-  ).join('');
+  ).join('') + `<div class="est-leg-total" style="margin-top:4px;font-size:10px;font-family:'JetBrains Mono',monospace;padding:3px 6px;border-radius:3px;background:#0e0d0a;color:${esDébito?'#c0392b':'#3ab07a'};border-left:2px solid ${esDébito?'#c0392b':'#3ab07a'}">${esDébito?'Débito':'Crédito'} $${fmt(Math.abs(costoLote))}/lote · ${lotes} lote${lotes>1?'s':''} = $${fmt(Math.abs(total))}</div>`;
 
   return `
   <div class="est-card" data-idx="${idx}" data-vto="${esc(vto)}" style="cursor:pointer" title="Click para ver detalle">
@@ -1556,10 +1556,6 @@ function _renderEstCard(s, vto, idx) {
       <div class="est-metric">
         <div class="m-lbl">Ret/Riesgo</div>
         <div class="m-val gold">${retRisk}</div>
-      </div>
-      <div class="est-metric" style="grid-column:1/-1">
-        <div class="m-lbl">Costo por lote</div>
-        <div class="m-val" style="color:${costoColor}">${esDébito?'Débito':'Crédito'} $${fmt(Math.abs(costoLote))} · ${lotes} lote${lotes>1?'s':''} = $${fmt(Math.abs(total))}</div>
       </div>
       ${tgtPnl != null ? `
       <div class="est-metric" style="grid-column:1/-1;border-color:#9b59b644">
