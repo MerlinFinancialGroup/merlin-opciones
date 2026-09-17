@@ -1672,8 +1672,8 @@ async def _guardar_cierres_si_corresponde():
             bid_ask_guardado = False
             cierres_guardado = False
         if now.weekday() < 5:
-            # 17:00 — guardar bid/ask de cierre
-            if now.hour == 17 and now.minute == 0 and not bid_ask_guardado:
+            # 16:59:50 — guardar bid/ask de cierre (antes que se borren las puntas)
+            if now.hour == 16 and now.minute == 59 and now.second >= 50 and not bid_ask_guardado:
                 print(f"[Cierre] Guardando bid/ask del cierre {fecha_hoy}")
                 _pg_save_bid_ask_cierre(fecha_hoy)
                 bid_ask_guardado = True
