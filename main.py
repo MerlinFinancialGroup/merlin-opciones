@@ -817,6 +817,14 @@ def _calc_iv(precio_mercado, S, K, T, r, tipo, tol=1e-5, max_iter=100):
     Calcula IV por bisección dado el precio de mercado.
     Devuelve IV en % (ej: 42.5) o None si no converge.
     """
+    import decimal as _dec
+    try:
+        precio_mercado = float(precio_mercado) if precio_mercado is not None else None
+        S = float(S) if S is not None else None
+        K = float(K) if K is not None else None
+        T = float(T) if T is not None else None
+        r = float(r) if r is not None else 0.2287
+    except (TypeError, ValueError): return None
     if not precio_mercado or precio_mercado <= 0: return None
     if not S or S <= 0 or not K or K <= 0: return None
     if not T or T <= 0: return None
