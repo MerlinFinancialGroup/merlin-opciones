@@ -1871,7 +1871,9 @@ async def get_cadena(
         # Actualizar precio subyacente con dato RT si disponible
         suby = (row.get("subyacente") or "").upper()
         if suby and suby in _precios_suby:
-            row["precio_suby"] = _precios_suby[suby]
+            row["precio_suby"] = float(_precios_suby[suby])
+        elif row.get("precio_suby") is not None:
+            row["precio_suby"] = float(row["precio_suby"])
         # Primero buscar en _veta_md (datos M: más frescos)
         md_snap = _veta_md.get(sym)
         # Luego en _veta_books (datos B: con profundidad)
@@ -1919,6 +1921,7 @@ async def get_cadena(
             r_rate = _get_tasa(vto, _tasas_rt)
             if S and K and dias and dias > 0:
                 T = dias / 365.0
+                S = float(S) if S else S; K = float(K) if K else K
                 if bid:    row["vi_bid"]    = _calc_iv(bid,    S, K, T, r_rate, tipo_op)
                 if ask:    row["vi_offer"]  = _calc_iv(ask,    S, K, T, r_rate, tipo_op)
                 # Último operado: primero de _veta_md, luego de _veta_books, luego cierre PG
