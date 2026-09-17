@@ -2603,16 +2603,18 @@ def _chance_estimate(legs: list, spot: float, sigma: float, T: float) -> float |
     return round(profit_prob / total_prob * 100, 1)
 
 def _get_best_option(opciones: list, tipo: str, strike_target: float, vto: str,
-                     prefer: str = "mid") -> dict | None:
+                     prefer: str = "mid", exclude_strikes: list = None) -> dict | None:
     """
     Busca la opción más cercana al strike_target con bid/ask/precio disponible.
     prefer: "mid" usa mid de bid/ask, "ultimo" usa último operado
+    exclude_strikes: lista de strikes a excluir (para evitar spreads degenerados)
     """
     candidates = [
         r for r in opciones
         if r.get("tipo") == tipo
         and r.get("vencimiento") == vto
         and r.get("strike") is not None
+        and (exclude_strikes is None or r.get("strike") not in exclude_strikes)
     ]
     if not candidates:
         return None
@@ -2695,12 +2697,17 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
         if sesgo not in sesgos_ok:
             return
 
-        # Resolver patas
+        # Resolver patas — excluir strikes ya usados para evitar spreads degenerados
         legs = []
+        used_strikes_by_tipo = {}
         for ld in legs_def:
-            opt = _get_best_option(rows_suby, ld["tipo"], ld["strike_target"], vto)
+            excluir = used_strikes_by_tipo.get(ld["tipo"], [])
+            opt = _get_best_option(rows_suby, ld["tipo"], ld["strike_target"], vto,
+                                   exclude_strikes=excluir if excluir else None)
             if not opt:
                 return
+            # Registrar el strike usado para este tipo
+            used_strikes_by_tipo.setdefault(ld["tipo"], []).append(opt["strike"])
             legs.append({
                 "tipo":   ld["tipo"],
                 "strike": opt["strike"],
@@ -2712,11 +2719,28 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
                 "ask":    opt["ask"],
             })
 
+        # Validar spreads: si dos patas tienen el mismo strike y tipo, es basura
+        if len(legs) >= 2:
+            strikes_por_tipo = {}
+            for l in legs:
+                key = (l["tipo"], l["strike"])
+                if key in strikes_por_tipo:
+                    return  # mismo strike para long y short → spread degenerado
+                strikes_por_tipo[key] = True
+            # También descartar si los strikes son iguales entre patas distintas
+            strikes = [l["strike"] for l in legs]
+            if len(set(strikes)) < len(strikes):
+                return
+
         # Costo neto de la estrategia
         costo_neto = sum(
             l["prima"] * l["qty"] if l["side"] == "long" else -l["prima"] * l["qty"]
             for l in legs
         )
+
+        # Descartar si el costo es exactamente 0 (spread degenerado)
+        if len(legs) >= 2 and abs(costo_neto) < 0.01:
+            return
 
         # Max profit / max risk / break-evens
         payoff = _payoff_array(legs, s_range)
