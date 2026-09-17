@@ -1863,6 +1863,12 @@ async def get_cadena(
                 mostrar_cierre_ba = True
                 state["_cierre_ba_fecha"] = fecha_cierre_ba
 
+    # Convertir todos los Decimal de PG a float para evitar TypeError
+    import decimal as _decimal
+    def _tofloat(v):
+        return float(v) if isinstance(v, _decimal.Decimal) else v
+    rows = [{k: _tofloat(v) for k, v in r.items()} for r in rows]
+
     matched_md = 0
     for r in rows:
         row = dict(r)
@@ -1883,10 +1889,10 @@ async def get_cadena(
         if book:
             bids = book.get("bids", [])
             asks = book.get("asks", [])
-            bid     = bids[0]["price"] if bids else book.get("bid")
-            ask     = asks[0]["price"] if asks else book.get("ask")
-            qty_bid = bids[0]["qty"]   if bids else book.get("qty_bid")
-            qty_ask = asks[0]["qty"]   if asks else book.get("qty_ask")
+            bid     = float(bids[0]["price"]) if bids else (float(book["bid"]) if book.get("bid") else None)
+            ask     = float(asks[0]["price"]) if asks else (float(book["ask"]) if book.get("ask") else None)
+            qty_bid = float(bids[0]["qty"])   if bids else (float(book["qty_bid"]) if book.get("qty_bid") else None)
+            qty_ask = float(asks[0]["qty"])   if asks else (float(book["qty_ask"]) if book.get("qty_ask") else None)
             book_ts = book.get("ts")
         if md_snap:
             matched_md += 1
@@ -2124,7 +2130,7 @@ def _dispatch_veta(item: str):
                 ultimo = snap.get("ultimo") or snap.get("bid") or snap.get("ask")
                 if ultimo and ultimo > 0:
                     _precios_suby[sym_upper] = float(ultimo)
-                    logger.debug(f"[Suby RT] {sym_upper} = {ultimo}")
+                    # print(f"[Suby RT] {sym_upper} = {ultimo}")
     elif item.startswith("B:"):
         sec_id, book = _parse_book_msg(item[2:])
         if sec_id and book:
