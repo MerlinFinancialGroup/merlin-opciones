@@ -2850,27 +2850,27 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
         {"tipo": "PUT", "strike_target": otm2p, "side": "long"},
     ], "spread", ["bullish", "very_bullish", "neutral"])
 
-    # Straddle — compra call+put ATM: apuesta a movimiento grande en cualquier dirección
+    # Straddle — compra call+put ATM: necesita movimiento GRANDE (pierde si lateral)
     add_strategy("Straddle", [
         {"tipo": "CALL", "strike_target": atm, "side": "long"},
         {"tipo": "PUT",  "strike_target": atm, "side": "long"},
-    ], "neutral_volatilidad", ["neutral"])
+    ], "neutral_movimiento", ["neutral"])
 
-    # Strangle — igual pero más barato, strikes más alejados
+    # Strangle — igual pero más barato, strikes más alejados del spot
     add_strategy("Strangle", [
         {"tipo": "CALL", "strike_target": otm1c, "side": "long"},
         {"tipo": "PUT",  "strike_target": otm1p, "side": "long"},
-    ], "neutral_volatilidad", ["neutral"])
+    ], "neutral_movimiento", ["neutral"])
 
-    # Venta Call OTM — ingreso si el papel no supera el strike (SOLO neutral)
+    # Venta Call OTM — gana si el papel baja o se mantiene (mismo sesgo que Bear Call Spread)
     add_strategy("Venta Call OTM", [
         {"tipo": "CALL", "strike_target": otm1c, "side": "short"},
-    ], "generacion_ingreso", ["neutral"])
+    ], "generacion_ingreso", ["very_bearish", "bearish", "neutral"])
 
-    # Venta Put OTM — ingreso si el papel no cae del strike (neutral/levemente alcista)
+    # Venta Put OTM — gana si el papel sube o se mantiene (mismo sesgo que Bull Put Spread)
     add_strategy("Venta Put OTM", [
         {"tipo": "PUT", "strike_target": otm1p, "side": "short"},
-    ], "generacion_ingreso", ["neutral"])
+    ], "generacion_ingreso", ["neutral", "bullish", "very_bullish"])
 
     # Ordenar por score descendente, top 5
     strategies.sort(key=lambda x: -x["score"])
