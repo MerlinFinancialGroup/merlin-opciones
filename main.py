@@ -2067,11 +2067,16 @@ def _calc_tasa_lecap(precio_mercado: float, vto_opcion: str) -> float | None:
         return None
 
 def _norm_veta_sym(security_id: str) -> str:
-    """'bm_MERV_GFGV6000OC_CI' → 'GFGV6000OC'"""
+    """'bm_MERV_GFGV6000OC_CI' → 'GFGV6000OC', 'bm_MERV_GGAL_24hs' → 'GGAL'"""
     s = security_id
     for p in ("bm_MERV_", "MERV_", "bm_"):
         if s.startswith(p): s = s[len(p):]; break
-    return s.rsplit("_", 1)[0].upper()
+    # Quitar sufijos conocidos: _CI, _24hs, _48hs, _DI, etc.
+    for suf in ("_CI", "_24hs", "_48hs", "_DI"):
+        if s.upper().endswith(suf.upper()):
+            s = s[:-len(suf)]
+            break
+    return s.upper()
 
 def _pf(x):
     try: return float(x) if x not in ("", None) else None
@@ -2114,10 +2119,12 @@ def _dispatch_veta(item: str):
                             _tasas_rt[vto_op] = tea
             # Detectar subyacentes y actualizar precio RT
             sym_upper = snap["symbol"].upper()
-            if sym_upper in {(r.get("subyacente") or "").upper() for r in state.get("opciones", [])}:
+            subyacentes_conocidos = {(r.get("subyacente") or "").upper() for r in state.get("opciones", [])}
+            if sym_upper in subyacentes_conocidos:
                 ultimo = snap.get("ultimo") or snap.get("bid") or snap.get("ask")
                 if ultimo and ultimo > 0:
-                    _precios_suby[sym_upper] = ultimo
+                    _precios_suby[sym_upper] = float(ultimo)
+                    logger.debug(f"[Suby RT] {sym_upper} = {ultimo}")
     elif item.startswith("B:"):
         sec_id, book = _parse_book_msg(item[2:])
         if sec_id and book:
