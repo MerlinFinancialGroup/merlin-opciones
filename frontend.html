@@ -1590,12 +1590,17 @@ function _renderVisualizador(s) {
   const vtoDate = vto === '2026-10-16' ? new Date('2026-10-16') : new Date('2026-12-18');
   const totalDias = Math.max(1, Math.round((vtoDate - today) / 86400000));
 
-  // Columnas de tiempo (máx 8)
+  // Columnas de tiempo (máx 8): desde hoy hasta vencimiento, espaciadas uniformemente
+  // Siempre incluir hoy (primera col) y vencimiento (última col)
   const nCols = Math.min(8, totalDias);
-  const colDays = [];
+  const colDays = [];   // días restantes al vencimiento para cada columna
+  const colDates = [];  // fecha real de cada columna
   for (let i = 0; i <= nCols; i++) {
-    const d = Math.round(totalDias * (1 - i / nCols));
-    colDays.push(d);
+    const diasRestantes = Math.round(totalDias * (1 - i / nCols));
+    colDays.push(diasRestantes);
+    // Fecha real = vencimiento - diasRestantes
+    const colDate = new Date(vtoDate.getTime() - diasRestantes * 86400000);
+    colDates.push(colDate);
   }
 
   // Rango de precios (filas): spot ±15% en 15 pasos
@@ -1672,7 +1677,7 @@ function _renderVisualizador(s) {
         </div>`).join('')}
       </div>
       <div class="vis-heatmap" id="vis-heatmap">
-        ${_buildHeatmap(prices, colDays, cellPnl, s, lotes, EST_STATE.visTab)}
+        ${_buildHeatmap(prices, colDays, colDates, cellPnl, s, lotes, EST_STATE.visTab)}
       </div>
     </div>
   </div>`;
@@ -1688,11 +1693,11 @@ function _renderVisualizador(s) {
     if (!btn) return;
     EST_STATE.visTab = btn.dataset.tab;
     document.querySelectorAll('.vis-tab').forEach(b => b.classList.toggle('active', b===btn));
-    document.getElementById('vis-heatmap').innerHTML = _buildHeatmap(prices, colDays, cellPnl, s, lotes, EST_STATE.visTab);
+    document.getElementById('vis-heatmap').innerHTML = _buildHeatmap(prices, colDays, colDates, cellPnl, s, lotes, EST_STATE.visTab);
   });
 }
 
-function _buildHeatmap(prices, colDays, cellPnl, s, lotes, tab) {
+function _buildHeatmap(prices, colDays, colDates, cellPnl, s, lotes, tab) {
   const maxLoss   = s.max_risk   || -1;
   const maxProfit = s.max_profit || 1;
   const spot      = s.spot || 0;
@@ -1725,17 +1730,20 @@ function _buildHeatmap(prices, colDays, cellPnl, s, lotes, tab) {
     return '';
   }
 
-  // Encabezado de columnas
-  const today = new Date();
-  function daysToLabel(d) {
-    if (d === 0) return 'Vto';
-    const dt = new Date(today.getTime() + (s.dias_vto - d) * 86400000);
+  // Encabezado de columnas — usa fechas reales calculadas desde el vencimiento
+  const DIAS_SEMANA = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+  function dateLabel(dt, d) {
+    if (d === 0) return 'VTO';
     return `${dt.getDate()}/${dt.getMonth()+1}`;
   }
 
   let html = '<table><thead><tr>';
   html += '<th class="sticky-col">Precio</th>';
-  colDays.forEach(d => { html += `<th>${daysToLabel(d)}<br><span style="color:#706858;font-size:8px">${d}d</span></th>`; });
+  colDays.forEach((d, i) => {
+    const dt = colDates[i];
+    const isHoy = i === 0;
+    html += `<th${isHoy?' style="color:#C9960A"':''}>${dateLabel(dt, d)}<br><span style="color:#706858;font-size:8px">${d === 0 ? '0d' : d+'d'}</span></th>`;
+  });
   html += '</tr></thead><tbody>';
 
   for (const S of prices) {
