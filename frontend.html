@@ -85,6 +85,7 @@ tbody td:first-child{position:sticky;left:0;background:#0e0d0a;z-index:4;text-al
 tbody tr.atm td:first-child{background:#131109}
 tbody tr:hover td:first-child{background:#1a1710}
 tbody tr.atm:hover td:first-child{background:#181507}
+/* FIX: el symbol no puede empujar el ancho de la columna (antes deformaba toda la tabla) */
 .sym{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sym.raw{color:#a09880;font-style:italic}
 td.center{text-align:center}
@@ -183,7 +184,6 @@ td.muted{color:#706858}
           <button class="tab-btn" data-view="smile">IV Smile</button>
           <button class="tab-btn" data-view="resumen">Resumen</button>
         </div>
-        <button class="csv-btn" id="btn-csv" title="Exportar cadena filtrada a CSV">CSV</button>
       </div>
 
       <div class="content" id="content">
@@ -205,7 +205,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 
 const ATM_TOL  = 0.01;   // ±1% del spot = ATM
 const PC_CAP   = 50;     // P/C por encima de esto se muestra como ">50"
-const IV_MIN   = 2.5;    // IV por debajo de esto = basura del solver → null (antes 0.5: demasiado laxo)
+const IV_MIN   = 0.5;    // IV por debajo de esto = basura del solver → null
 const IV_MAX   = 500;    // IV por encima de esto = basura → null
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
@@ -216,27 +216,6 @@ const KNOWN_PREFIXES = ['GGAL','YPFD','BBAR','TXAR','METR','CRES','SUPV','BYMA',
 // ── HELPERS ────────────────────────────────────────────────────────────────────
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-
-function fmt(x)  { return (x == null || !isFinite(x)) ? '—' : Number(x).toLocaleString('es-AR',{maximumFractionDigits:2}); }
-function fmtN(x) { return (x == null || !isFinite(x)) ? '—' : Math.round(x).toLocaleString('es-AR'); }
-function fmtM(x) {
-  if (x == null || !isFinite(x)) return '—';
-  const a = Math.abs(x);
-  if (a >= 1e12) return (x/1e12).toFixed(2)+'T';
-  if (a >= 1e9)  return (x/1e9).toFixed(2)+'B';
-  if (a >= 1e6)  return (x/1e6).toFixed(2)+'M';
-  if (a >= 1e3)  return (x/1e3).toFixed(1)+'K';
-  return String(Math.round(x));
-}
-
-// Percentil p (0..1) de un array numérico
-function pctl(arr, p) {
-  const s = [...arr].sort((a,b)=>a-b);
-  const i = (s.length - 1) * p;
-  const lo = Math.floor(i), hi = Math.ceil(i);
-  return s[lo] + (s[hi] - s[lo]) * (i - lo);
-}
-const median = a => pctl(a, 0.5);
 
 if (typeof AbortSignal !== 'undefined' && !AbortSignal.timeout) {
   AbortSignal.timeout = ms => {
@@ -275,8 +254,6 @@ let state = {
   currentSuby: null,
   view: 'cadena',
   dropped: 0,
-  _smileZoom: null, _smileZoomKey: null,
-  _smileRange: null, _smileY: null, _smileRedraw: null,
 };
 let cadenaAbort = null;
 let lastCadenaJson = null;
@@ -308,6 +285,8 @@ function parseTicker(sym) {
   const token = String(sym || '').trim().split(/\s+/)[0].toUpperCase();
   if (!token) return { symbol: '', tipo: null, strike: null };
 
+  // 1) Si el token arranca con un subyacente conocido, lo que sigue es marcador+strike.
+  //    (evita que "SUPVC4700OC" se interprete como PUT por la V de SUPV)
   const known = [...new Set([...KNOWN_PREFIXES, ...state.subyacentes.map(s => s.subyacente)])]
     .filter(t => token.startsWith(t))
     .sort((a,b) => b.length - a.length)[0];
@@ -316,6 +295,7 @@ function parseTicker(sym) {
   let m = rest.match(/^\.?([CV])(\d{2,7}(?:\.\d+)?)\.?(?:OC|DI)?$/);
   if (m) return { symbol: token, tipo: m[1] === 'C' ? 'CALL' : 'PUT', strike: parseFloat(m[2]) };
 
+  // 2) Fallback genérico: primer C/V seguido del strike al final del token
   m = token.match(/^(.+?)([CV])(\d{2,7}(?:\.\d+)?)\.?(?:OC|DI)?$/);
   if (m) return { symbol: token, tipo: m[2] === 'C' ? 'CALL' : 'PUT', strike: parseFloat(m[3]) };
 
@@ -372,8 +352,8 @@ function sanitizeCadena(rawRows) {
     }
     // 5) Teórico $0 = solver roto → teórico y desvío no son confiables
     if (!(r.precio_teorico > 0)) { patch.precio_teorico = null; patch.desvio_teorico = null; }
-    // 6) FIX: antes se chequeaba r._iv_ult (que acá no existe todavía) y el filtro era un no-op
-    if (r.vol_implicita != null && (r.vol_implicita < IV_MIN || r.vol_implicita > IV_MAX)) {
+    // 6) IV imposible (0.96%, etc.) = solver roto
+    if (r._iv_ult != null && (r._iv_ult < IV_MIN || r._iv_ult > IV_MAX)) {
       patch.vol_implicita = null;
     }
     if (Object.keys(patch).length) r = { ...r, ...patch };
@@ -388,113 +368,6 @@ function sanitizeCadena(rawRows) {
   if (rawCount) console.warn(`[sanitize] ${rawCount} filas reconstruidas desde línea cruda del feed`);
 
   return { rows: out, dropped: droppedSyms.length };
-}
-
-// Mejor IV disponible de una fila, con calidad: mid de BO > un lado > último
-function ivOf(r) {
-  const v = (r.vi_ultimo > 0 ? r.vi_ultimo : r.vol_implicita) || null;
-  if (v == null || v < IV_MIN || v > IV_MAX) return null;
-  return v;
-}
-
-// ── CURVA TEÓRICA (fit único robusto por vencimiento) ─────────────────────────
-// Un punto por strike usando el lado OTM (paridad put-call: call(K) y put(K) comparten IV).
-// La IV ITM es ruido (prima ~100% intrínseca) → se descarta a favor del lado OTM del strike.
-function bestIV(r) {
-  const b = r.vi_bid > 0 ? r.vi_bid : null;
-  const o = r.vi_offer > 0 ? r.vi_offer : null;
-  if (b && o) {
-    if (o < b) return null;                       // libro cruzado = basura
-    return { iv: (b + o) / 2, q: 1.0 };
-  }
-  if (b) return { iv: b, q: 0.7 };
-  if (o) return { iv: o, q: 0.7 };
-  if (r._iv_ult > 0) return { iv: r._iv_ult, q: 0.5 };
-  return null;
-}
-
-function buildSmileSample(rows, spot, dias, tasaPct) {
-  const T = Math.max((dias || 16) / 365, 1 / 365);
-  const F = spot * Math.exp(((tasaPct || 0) / 100) * T);   // forward, no spot
-  const byStrike = new Map();
-
-  for (const r of rows) {
-    if (!(r.strike > 0)) continue;
-    if (r.valor_temporal != null && r.valor_temporal <= 0) continue;
-    const b = bestIV(r);
-    if (!b || b.iv < IV_MIN || b.iv > IV_MAX) continue;
-
-    const cand = { iv: b.iv, q: b.q,
-      otm: r.tipo === 'CALL' ? r.strike >= F : r.strike <= F };
-    const cur = byStrike.get(r.strike);
-    if (!cur) { byStrike.set(r.strike, cand); continue; }
-    if (cand.otm !== cur.otm)      { if (cand.otm)       byStrike.set(r.strike, cand); }
-    else if (cand.q !== cur.q)     { if (cand.q > cur.q) byStrike.set(r.strike, cand); }
-    else cur.iv = (cur.iv + cand.iv) / 2;   // mismo side, misma calidad → promedio
-  }
-
-  const pts = [...byStrike.entries()].map(([K, p]) => ({ k: Math.log(K / F), iv: p.iv, q: p.q }));
-  return { pts, F, T };
-}
-
-// Peso ∝ vega: decae al alejarse del ATM (lo que ancla la curva)
-function vegaW(k, iv, T) {
-  const s = (iv / 100) * Math.sqrt(T);
-  if (!(s > 0)) return 0;
-  const d1 = (-k + 0.5 * s * s) / s;
-  return Math.exp(-0.5 * d1 * d1);
-}
-
-// Gauss 3x3 con pivoteo
-function solve3(A, b) {
-  const M = A.map((row,i) => [...row, b[i]]);
-  for (let c = 0; c < 3; c++) {
-    let p = c;
-    for (let r = c+1; r < 3; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
-    [M[c], M[p]] = [M[p], M[c]];
-    const d = M[c][c] || 1e-12;
-    for (let j = c; j < 4; j++) M[c][j] /= d;
-    for (let r = 0; r < 3; r++) {
-      if (r === c) continue;
-      const f = M[r][c];
-      for (let j = c; j < 4; j++) M[r][j] -= f * M[c][j];
-    }
-  }
-  return [M[0][3], M[1][3], M[2][3]];
-}
-
-// σ(k) = c0 + c1·k + c2·k²  (k = ln(K/F)) — IRLS-Huber: los outliers (VI Offer 352%)
-// terminan con peso ~0 y no mueven la curva.
-function fitQuadRobusta(pts, T, { iters = 25, huber = 1.5 } = {}) {
-  if (!pts || pts.length < 5) return null;
-  const ks = pts.map(p => p.k);
-  if (Math.max(...ks) - Math.min(...ks) < 1e-4) return null;
-
-  const data = pts.map(p => ({ ...p, w: p.q * vegaW(p.k, p.iv, T) }));
-  let c = null;
-
-  for (let it = 0; it < iters; it++) {
-    const S = [[0,0,0],[0,0,0],[0,0,0]], t = [0,0,0];
-    for (const p of data) {
-      const x = [1, p.k, p.k * p.k];
-      for (let i = 0; i < 3; i++) {
-        t[i] += p.w * x[i] * p.iv;
-        for (let j = 0; j < 3; j++) S[i][j] += p.w * x[i] * x[j];
-      }
-    }
-    const c2 = solve3(S, t);
-    if (!c2 || !c2.every(v => Number.isFinite(v) && Math.abs(v) < 1e7)) break;
-    c = c2;
-    const res = data.map(p => p.iv - (c[0] + c[1]*p.k + c[2]*p.k*p.k));
-    const sc = 1.4826 * median(res.map(Math.abs)) || 1;
-    data.forEach((p, i) => {
-      const u = Math.abs(res[i]) / sc;
-      const hub = u <= huber ? 1 : huber / u;
-      p.w = pts[i].q * vegaW(p.k, p.iv, T) * hub;
-    });
-  }
-  if (!c) return null;
-  return k => c[0] + c[1]*k + c[2]*k*k;
 }
 
 // ── DATA ───────────────────────────────────────────────────────────────────────
@@ -579,6 +452,7 @@ function updateSubyHeader(suby) {
   const pcRatio = state.resumen.put_call_ratio?.[suby];
   const tasa = state.cadena.find(x => x.tasa_libre != null)?.tasa_libre;
 
+  // FIX: P/C validado, con tope, y con el color bien (alto = bearish = rojo)
   const pcValid = typeof pcRatio === 'number' && isFinite(pcRatio);
   const pcTxt = pcValid ? (pcRatio > PC_CAP ? '>' + PC_CAP : pcRatio.toFixed(2)) : null;
   const pcCls = !pcValid ? '' : pcRatio >= 1 ? 'dn' : pcRatio <= 0.7 ? 'up' : '';
@@ -658,7 +532,7 @@ function getFilteredRows() {
   if (show === 'traded') rows = rows.filter(r => (r.volumen_ars||0) > 0);
   if (show === 'oi')     rows = rows.filter(r => (r.open_interest||0) > 0);
 
-  // filas sin strike van al FINAL, no arriba
+  // FIX: filas sin strike van al FINAL, no arriba
   const sk = r => (r.strike > 0 ? r.strike : Infinity);
   return [...rows].sort((a,b) =>
     sk(a) - sk(b) ||
@@ -668,7 +542,6 @@ function getFilteredRows() {
 
 // ── VIEWS ──────────────────────────────────────────────────────────────────────
 function switchView(view, btn) {
-  if (!state.currentSuby) return;
   state.view = view;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
@@ -681,47 +554,6 @@ function renderView() {
   else renderResumen();
 }
 
-// ── CADENA ─────────────────────────────────────────────────────────────────────
-function renderCadena() {
-  const rows = getFilteredRows();
-  if (!rows.length) { showEmpty('Sin opciones para los filtros seleccionados'); return; }
-
-  const badge = m => m==='ATM' ? '<span class="badge-atm">ATM</span>'
-              : m==='ITM'  ? '<span class="badge-itm">ITM</span>'
-              : m==='OTM'  ? '<span class="badge-otm">OTM</span>' : '—';
-  const desvCls = v => v==null ? 'muted' : v>0 ? 'pos' : v<0 ? 'neg' : '';
-
-  let html = `<table><thead><tr>
-    <th>Símbolo</th><th>Tipo</th><th>Strike</th><th>Venc.</th><th class="center">Mony</th>
-    <th>Último</th><th>VI Bid</th><th>VI Of.</th><th>IV</th><th>V. Temp</th>
-    <th>Teórico</th><th>Desvío</th><th>Vol ARS</th><th>OI</th><th>Días</th>
-  </tr></thead><tbody>`;
-  for (const r of rows) {
-    const iv = ivOf(r);
-    const d = r.desvio_teorico;
-    html += `<tr class="${r.moneyness==='ATM'?'atm':''}">
-      <td class="sym ${r._raw?'raw':''}" title="${esc(r.symbol_raw||r.symbol)}">${esc(r.symbol)}</td>
-      <td class="${r.tipo==='CALL'?'pos':r.tipo==='PUT'?'neg':'muted'}">${esc(r.tipo||'—')}</td>
-      <td>${r.strike>0?fmt(r.strike):'—'}</td>
-      <td>${r.vencimiento?esc(vtoLabel(r.vencimiento)):'—'}</td>
-      <td class="center">${badge(r.moneyness)}</td>
-      <td>${fmt(r.ultimo_precio)}</td>
-      <td>${fmt(r.vi_bid)}</td>
-      <td>${fmt(r.vi_offer)}</td>
-      <td class="${iv!=null?'gold':''}">${iv!=null?iv.toFixed(2)+'%':'—'}</td>
-      <td>${fmt(r.valor_temporal)}</td>
-      <td>${fmt(r.precio_teorico)}</td>
-      <td class="${desvCls(d)}">${d!=null?((d>0?'+':'')+d.toFixed(1)+'%'):'—'}</td>
-      <td>${fmtM(r.volumen_ars)}</td>
-      <td>${fmtN(r.open_interest)}</td>
-      <td>${r.dias_vto!=null?r.dias_vto:'—'}</td>
-    </tr>`;
-  }
-  html += '</tbody></table>';
-  document.getElementById('content').innerHTML = html;
-}
-
-// ── IV SMILE ───────────────────────────────────────────────────────────────────
 function renderSmile() {
   const vto  = document.getElementById('ctrl-vto').value;
   const show = document.getElementById('ctrl-show').value;
@@ -731,11 +563,12 @@ function renderSmile() {
   // Clave de contexto — resetea zoom solo si cambia suby/vto/tipo
   const zoomKey = (state.currentSuby||'') + '|' + vto + '|' + st;
 
-  state.cadena.forEach(r => { r._iv_ult = ivOf(r); });
-
-  // Puntos del chart: excluye opciones sin valor temporal (muy ITM, precio viejo)
+  // Pools de datos
+  state.cadena.forEach(r => { r._iv_ult = (r.vi_ultimo > 0 ? r.vi_ultimo : r.vol_implicita) || null; });
+  // Excluir opciones sin valor temporal (muy ITM, precio viejo)
   let base = state.cadena.filter(r => r.strike > 0 && r._iv_ult > 0
-    && (r.valor_temporal == null || r.valor_temporal > 0));
+    && (r.valor_temporal == null || r.valor_temporal > 0)
+    && r._iv_ult < 250);
   let baseBO = state.cadena.filter(r => r.strike > 0 && (r.vi_bid > 0 || r.vi_offer > 0));
   if (vto)   { base = base.filter(r => r.vencimiento === vto); baseBO = baseBO.filter(r => r.vencimiento === vto); }
   if (show === 'traded') { base = base.filter(r => (r.volumen_ars||0) > 0); baseBO = baseBO.filter(r => (r.volumen_ars||0) > 0); }
@@ -763,56 +596,45 @@ function renderSmile() {
   const skew = otmP&&otmC ? +(otmP._iv_ult-otmC._iv_ult).toFixed(2) : null;
   const vh = rows.map(r=>r.vol_hist_40r).find(v=>v!=null);
 
-  // ── Curva teórica: UN solo fit por vencimiento ──
-  // Mezclar vencimientos no tiene sentido → sin vto seleccionado no se fitea.
-  // El fit usa el pool con bid/offer (aunque el último sea basura) + lado OTM por strike.
-  let fitTeorica = null, Fwd = spot, notaFit = '';
-  if (!vto) {
-    notaFit = 'Curva teórica: filtrá por un vencimiento';
-  } else if (spot > 0) {
-    let poolFit = state.cadena.filter(r => r.strike > 0
-      && (r.valor_temporal == null || r.valor_temporal > 0)
-      && r.vencimiento === vto);
-    if (show === 'traded') poolFit = poolFit.filter(r => (r.volumen_ars||0) > 0);
-    if (show === 'oi')     poolFit = poolFit.filter(r => (r.open_interest||0) > 0);
-    const tasaPct = state.cadena.find(x => x.tasa_libre != null)?.tasa_libre;
-    const dias = state.cadena.find(x => x.vencimiento === vto && x.dias_vto != null)?.dias_vto;
-    const smp = buildSmileSample(poolFit, spot, dias, tasaPct);
-    fitTeorica = fitQuadRobusta(smp.pts, smp.T);
-    Fwd = smp.F;
-    if (!fitTeorica) notaFit = 'Curva teórica: sin suficientes strikes OTM limpios';
-  }
-
   const showCalls = st === 'call' || st === 'ambos';
   const showPuts  = st === 'put'  || st === 'ambos';
   const soloUno   = st === 'call' || st === 'put';
   const visRows   = base.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
   const visRowsBO = baseBO.filter(r => (showCalls && r.tipo==='CALL') || (showPuts && r.tipo==='PUT'));
 
+  // Rango Y global (todos los puntos)
+  const allYVals = [
+    ...visRows.map(r=>r._iv_ult).filter(v=>v>0),
+    ...visRowsBO.flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)),
+  ];
+  if (!allYVals.length) { showEmpty('Sin datos de IV para los filtros seleccionados'); return; }
+  const yRawMin = Math.min(...allYVals), yRawMax = Math.max(...allYVals);
+  const sArr = visRows.map(r=>r.strike);
+  const sMin = Math.min(...sArr), sMax = Math.max(...sArr);
+  const yPad = (yRawMax-yRawMin)*0.03||0.5;
+  const yMin = yRawMin-yPad, yMax = yRawMax+yPad;
+
+  // Leyenda (necesaria antes del early-redraw)
   const legendItems = [];
   if(showCalls){
-    legendItems.push(['Call Oper','rgba(220,220,220,0.9)',false],['Call IAMC','rgba(180,130,255,0.9)',false]);
-    if(soloUno) legendItems.push(['VI Bid','rgba(58,176,122,0.9)',false],['VI Offer','rgba(192,57,43,0.9)',false]);
+    legendItems.push(['Call Oper','rgba(220,220,220,0.9)',false],['Call IAMC','rgba(180,130,255,0.9)',false],['Call Smile','rgba(80,180,255,0.8)',true]);
+    if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
   if(showPuts){
-    legendItems.push(['Put Oper','rgba(220,220,0,0.95)',false],['Put IAMC','rgba(255,160,50,0.9)',false]);
-    if(soloUno) legendItems.push(['VI Bid','rgba(58,176,122,0.9)',false],['VI Offer','rgba(192,57,43,0.9)',false]);
+    legendItems.push(['Put Oper','rgba(220,220,0,0.95)',false],['Put IAMC','rgba(255,160,50,0.9)',false],['Put Smile','rgba(80,100,255,0.8)',true]);
+    if(soloUno){ legendItems.push(['VI Bid','rgba(58,176,122,0.9)',true],['VI Offer','rgba(192,57,43,0.9)',true]); }
   }
-  if(fitTeorica) legendItems.push(['Teórica','rgba(111,168,220,0.95)',true]);
 
-  const sArr = (visRows.length ? visRows : base).map(r=>r.strike);
-  const sMin = Math.min(...sArr), sMax = Math.max(...sArr);
-  state._smileRange = { min: sMin, max: sMax };
-
+  // Zoom: preservar si la key es la misma, resetear si cambió
   if (!state._smileZoom || state._smileZoomKey !== zoomKey) {
     const sRange = sMax - sMin || 1;
     state._smileZoom = { xMin: sMin - sRange*0.03, xMax: sMax + sRange*0.03 };
     state._smileZoomKey = zoomKey;
   }
 
-  // Rebuild DOM solo si no existe el canvas; los stats se actualizan SIEMPRE (fix:
-  // antes quedaban congelados al cambiar filtros porque el canvas persistía)
-  if (!document.getElementById('sc')) {
+  // Rebuild DOM solo si no existe el canvas
+  const existingCanvas = document.getElementById('sc');
+  if (!existingCanvas) {
     document.getElementById('content').innerHTML = `
       <div style="padding:16px 20px;overflow:auto;height:100%">
         <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:14px;margin-bottom:14px">
@@ -822,23 +644,23 @@ function renderSmile() {
             <button onclick="resetSmileZoom()" style="padding:2px 8px;background:none;border:0.5px solid #2a2510;color:#706858;cursor:pointer;font-size:9px;font-family:'JetBrains Mono',monospace;border-radius:3px" title="Restablecer zoom">↺ zoom</button>
           </div>
         </div>
-        <div id="smile-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px"></div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+          ${[
+            ['IV Mín',ivMin.toFixed(2)+'%',''],
+            ['IV Máx',ivMax.toFixed(2)+'%',''],
+            ['IV Prom',ivAvg+'%','#C9960A'],
+            ['IV ATM',atmRow?atmRow._iv_ult.toFixed(2)+'%':'—','#C9960A'],
+            ['Skew Put-Call',skew!=null?(skew>0?'+':'')+skew+'%':'—',skew>0?'#c0392b':skew<0?'#3ab07a':''],
+            ['VH 40r',vh!=null?vh.toFixed(2)+'%':'—',''],
+            ['Strikes',allIV.length,''],
+            ['Spot','$'+fmt(spot),'#C9960A'],
+          ].map(([l,v,c])=>`<div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
+            <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;color:#706858;margin-bottom:3px">${l}</div>
+            <div style="font-size:14px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${c||'#e8e0cc'}">${v}</div>
+          </div>`).join('')}
+        </div>
       </div>`;
   }
-  document.getElementById('stt').textContent = notaFit;
-  document.getElementById('smile-stats').innerHTML = [
-    ['IV Mín',ivMin.toFixed(2)+'%',''],
-    ['IV Máx',ivMax.toFixed(2)+'%',''],
-    ['IV Prom',ivAvg+'%','#C9960A'],
-    ['IV ATM',atmRow?atmRow._iv_ult.toFixed(2)+'%':'—','#C9960A'],
-    ['Skew Put-Call',skew!=null?(skew>0?'+':'')+skew+'%':'—',skew>0?'#c0392b':skew<0?'#3ab07a':''],
-    ['VH 40r',vh!=null?vh.toFixed(2)+'%':'—',''],
-    ['Strikes',allIV.length,''],
-    ['Spot','$'+fmt(spot),'#C9960A'],
-  ].map(([l,v,c])=>`<div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
-    <div style="font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;color:#706858;margin-bottom:3px">${l}</div>
-    <div style="font-size:14px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${c||'#e8e0cc'}">${v}</div>
-  </div>`).join('');
 
   // Dibujar canvas
   const canvas = document.getElementById('sc');
@@ -854,13 +676,13 @@ function renderSmile() {
 
   // Función de dibujo reutilizable (usa zoom actual)
   function doDraw() {
+    const z = state._smileZoom;
     redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
-      state._smileZoom.xMin, state._smileZoom.xMax,
+      z.xMin, z.xMax, yMin, yMax,
       spot, sMin, sMax, showCalls, showPuts, soloUno,
-      calls, puts, callsBO, putsBO, visRows, legendItems, ly,
-      fitTeorica, Fwd, !!vto);
+      calls, puts, callsBO, putsBO, visRows, legendItems, ly);
   }
-  state._smileRedraw = doDraw;
+
   doDraw();
 
   // Zoom con rueda
@@ -882,11 +704,8 @@ function renderSmile() {
     doDraw();
   };
 
-  // Pan con drag + tooltip
+  // Pan con drag
   let dragStart = null;
-  const tipRows   = visRows.length ? visRows : base;
-  const tipRowsBO = visRowsBO.length ? visRowsBO : baseBO;
-
   canvas.onmousedown = e => {
     dragStart = { x: e.clientX, zoom: {...state._smileZoom} };
     canvas.style.cursor = 'grabbing';
@@ -900,25 +719,31 @@ function renderSmile() {
       state._smileZoom = { xMin: dragStart.zoom.xMin + shift, xMax: dragStart.zoom.xMax + shift };
       doDraw();
     } else {
+      // Tooltip
       const rect = canvas.getBoundingClientRect();
       const mx = (e.clientX - rect.left) * (W / rect.width);
       const my = (e.clientY - rect.top) * (H / rect.height);
       const z = state._smileZoom;
-      const yR = state._smileY || { yMin: 0, yMax: 100 };
       const xsL = s => pad.l + (z.xMax===z.xMin ? cW/2 : (s-z.xMin)/(z.xMax-z.xMin)*cW);
-      const ysL = v => pad.t + cH - ((v - yR.yMin) / (yR.yMax - yR.yMin) * cH);
+      // yMin/yMax dinámico según visibles
+      const inView = r => r.strike >= z.xMin && r.strike <= z.xMax;
+      const yValsV = [...visRows.filter(inView).map(r=>r._iv_ult).filter(v=>v>0),
+        ...(soloUno?visRowsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)):[])]
+      const yrMin = yValsV.length?Math.min(...yValsV):yMin;
+      const yrMax = yValsV.length?Math.max(...yValsV):yMax;
+      const yp = (yrMax-yrMin)*0.03||0.5;
+      const ysL = v => pad.t + cH - ((v-(yrMin-yp))/((yrMax+yp)-(yrMin-yp))*cH);
       let best=null, bd=20;
-      [...tipRows,...tipRowsBO].forEach(r=>{
+      [...visRows,...visRowsBO].forEach(r=>{
         [['_iv_ult',r._iv_ult],['vi_bid',r.vi_bid],['vi_offer',r.vi_offer]].forEach(([field,val])=>{
           if(!(val>0)) return;
           const d=Math.hypot(xsL(r.strike)-mx,ysL(val)-my);
           if(d<bd){bd=d;best={r,field,val};}
         });
       });
-      const stt = document.getElementById('stt');
-      if(stt) stt.innerHTML = best
+      document.getElementById('stt').innerHTML = best
         ? `<span style="color:${best.r.tipo==='CALL'?'#3ab07a':'#c0392b'}">${esc(best.r.tipo)}</span> · ${esc(best.r.symbol)} · $${fmt(best.r.strike)} · <span style="color:#706858">${best.field==='_iv_ult'?'IV Últ':best.field==='vi_bid'?'VI Bid':'VI Offer'}</span> <span style="color:#C9960A">${best.val.toFixed(2)}%</span> · Último $${fmt(best.r.ultimo_precio)} · OI ${fmtN(best.r.open_interest)}`
-        : esc(notaFit);
+        : '';
     }
   };
   canvas.onmouseup = () => { dragStart = null; canvas.style.cursor = 'grab'; };
@@ -926,72 +751,131 @@ function renderSmile() {
     dragStart = null;
     canvas.style.cursor = 'grab';
     const stt = document.getElementById('stt');
-    if(stt) stt.textContent = notaFit;
+    if(stt) stt.innerHTML = '';
   };
 }
 
-function resetSmileZoom() {
-  const r = state._smileRange || { min: 0, max: 1 };
-  const range = r.max - r.min || 1;
-  state._smileZoom = { xMin: r.min - range*0.03, xMax: r.max + range*0.03 };
-  state._smileRedraw?.();
+// Dibuja una curva suavizada Catmull-Rom a partir de puntos {x,y}
+function drawCatmullRom(ctx, pts, tension=0.5) {
+  if(pts.length < 2) return;
+  if(pts.length === 2){ ctx.moveTo(pts[0].x,pts[0].y); ctx.lineTo(pts[1].x,pts[1].y); return; }
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for(let i=0; i<pts.length-1; i++){
+    const p0 = pts[Math.max(i-1,0)];
+    const p1 = pts[i];
+    const p2 = pts[i+1];
+    const p3 = pts[Math.min(i+2,pts.length-1)];
+    const cp1x = p1.x + (p2.x-p0.x)*tension/3;
+    const cp1y = p1.y + (p2.y-p0.y)*tension/3;
+    const cp2x = p2.x - (p3.x-p1.x)*tension/3;
+    const cp2y = p2.y - (p3.y-p1.y)*tension/3;
+    ctx.bezierCurveTo(cp1x,cp1y,cp2x,cp2y,p2.x,p2.y);
+  }
 }
 
-// Dibuja el smile completo. Rango Y por percentiles 5–95 de lo visible + clip del
-// área de plot: un quote extremo (352%) deja de aplastar el chart y de cruzar ejes.
 function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
-    xMin, xMax, spot, sMin, sMax,
-    showCalls, showPuts, soloUno, calls, puts, callsBO, putsBO, visRows, legendItems, ly,
-    fit, F, conVto) {
+    xMin, xMax, yMinFull, yMaxFull, spot, sMin, sMax,
+    showCalls, showPuts, soloUno, calls, puts, callsBO, putsBO, visRows, legendItems, ly) {
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle='#12100a'; ctx.fillRect(0,0,W,H);
-
+  // Recalcular rango Y con solo los puntos en el rango X visible
   const inView = r => r.strike >= xMin && r.strike <= xMax;
-
   const yVals = [
     ...(showCalls ? calls.filter(inView).map(r=>r._iv_ult).filter(v=>v>0) : []),
     ...(showPuts  ? puts.filter(inView).map(r=>r._iv_ult).filter(v=>v>0)  : []),
     ...(showCalls && soloUno ? callsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0)) : []),
     ...(showPuts  && soloUno ? putsBO.filter(inView).flatMap(r=>[r.vi_bid,r.vi_offer].filter(v=>v>0))  : []),
   ];
-  let yMin = 40, yMax = 120;
-  if (yVals.length) {
-    let lo = pctl(yVals,.05), hi = pctl(yVals,.95);
-    if (!(hi > lo)) { const m = (hi+lo)/2; lo = m-1; hi = m+1; }
-    const p = Math.max((hi-lo)*0.08, 0.4);
-    yMin = lo - p; yMax = hi + p;
-  }
-  state._smileY = { yMin, yMax };
-
+  const yRawMin = yVals.length ? Math.min(...yVals) : yMinFull;
+  const yRawMax = yVals.length ? Math.max(...yVals) : yMaxFull;
+  const yPadDyn = (yRawMax - yRawMin) * 0.03 || 0.5;
+  const yMin = yRawMin - yPadDyn;
+  const yMax = yRawMax + yPadDyn;
   const xs = s => pad.l + (xMax===xMin ? cW/2 : (s-xMin)/(xMax-xMin)*cW);
   const ys = v => pad.t + cH - (yMax===yMin ? cH/2 : (v-yMin)/(yMax-yMin)*cH);
 
-  // Grid Y
-  for(let i=0;i<=5;i++){
-    const v=yMin+(yMax-yMin)*i/5, y=ys(v);
-    ctx.strokeStyle='#1a1710'; ctx.lineWidth=0.5;
-    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(W-pad.r,y); ctx.stroke();
-    ctx.fillStyle='#706858'; ctx.font='9px monospace'; ctx.textAlign='right';
-    ctx.fillText(v.toFixed(1)+'%',pad.l-3,y+3);
+  // ── Curva IV Teórica BS (smile plano con sigma = IV ATM) ──
+  // Implementación de Black-Scholes en JS para calcular IV implícita teórica
+  function normCDF(x) {
+    const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+    const sign = x<0?-1:1, t=1/(1+p*Math.abs(x)/Math.SQRT2);
+    const y=1-((((a5*t+a4)*t+a3)*t+a2)*t+a1)*t*Math.exp(-x*x/2);
+    return 0.5*(1+sign*y);
   }
-  // Grid X
-  for(let i=0;i<=6;i++){
-    const s=xMin+(xMax-xMin)*i/6, x=xs(s);
-    ctx.strokeStyle='#1a1710'; ctx.lineWidth=0.5;
-    ctx.beginPath(); ctx.moveTo(x,pad.t); ctx.lineTo(x,H-pad.b); ctx.stroke();
-    ctx.fillStyle='#706858'; ctx.font='9px monospace'; ctx.textAlign='center';
-    ctx.fillText('$'+Math.round(s).toLocaleString('es-AR'),x,H-pad.b+12);
+  function bsPrice(S,K,T,r,sigma,tipo) {
+    if(!S||!K||!T||!sigma||sigma<=0) return null;
+    const d1=(Math.log(S/K)+(r+0.5*sigma*sigma)*T)/(sigma*Math.sqrt(T));
+    const d2=d1-sigma*Math.sqrt(T);
+    if(tipo==='CALL') return S*normCDF(d1)-K*Math.exp(-r*T)*normCDF(d2);
+    return K*Math.exp(-r*T)*normCDF(-d2)-S*normCDF(-d1);
   }
-  // ATM
-  if(spot>=xMin&&spot<=xMax){
-    const xa=xs(spot);
-    ctx.strokeStyle='rgba(201,150,10,0.3)'; ctx.lineWidth=1; ctx.setLineDash([4,4]);
-    ctx.beginPath(); ctx.moveTo(xa,pad.t); ctx.lineTo(xa,H-pad.b); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle='#C9960A'; ctx.font='9px monospace'; ctx.textAlign='center';
-    ctx.fillText('ATM',xa,H-pad.b+22);
+  function calcIV(price,S,K,T,r,tipo) {
+    if(!price||price<=0||!S||!K||!T) return null;
+    let lo=0.001,hi=5,mid,p;
+    for(let i=0;i<60;i++){
+      mid=(lo+hi)/2; p=bsPrice(S,K,T,r,mid,tipo);
+      if(!p) return null;
+      if(Math.abs(p-price)<0.0001) return mid*100;
+      p>price?hi=mid:lo=mid;
+    }
+    return mid*100;
   }
 
-  // Gaussiana de referencia (solo con vencimiento seleccionado)
+  function drawTeoricoBS(pts, color, tipo) {
+    if(!spot||spot<=0) return;
+    // Usar IV ATM como sigma flat
+    const atmPt = pts.reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b, null);
+    if(!atmPt||!(atmPt._iv_ult>0)) return;
+    const sigmaFlat = atmPt._iv_ult / 100;
+    // Tasa del primer punto con dato
+    const r0 = (pts.find(r=>r.tasa_libre>0)?.tasa_libre||16.2) / 100;
+    const T0 = (pts.find(r=>r.dias_vto>0)?.dias_vto||16) / 365;
+
+    // Calcular precio teórico BS para cada strike y de ahí la IV
+    // Con sigma flat el resultado ES sigmaFlat — no tiene sentido
+    // En cambio: calcular precio BS con sigmaFlat y luego recalcular IV → siempre da sigmaFlat
+    // Lo correcto: usar la curva de volatilidad ajustada por moneyness (skew proxy)
+    // Usamos: sigma(K) = sigmaFlat * (1 + skewCoeff * ln(K/spot))
+    // donde skewCoeff se estima desde los datos reales
+    const validPts = pts.filter(r=>r._iv_ult>0&&r.strike>0&&(r.valor_temporal==null||r.valor_temporal>0)&&Math.abs((r.strike-spot)/(spot||1))<0.4);
+    if(validPts.length < 3) return;
+
+    // Estimar skew lineal por regresión simple
+    let sx=0,sy=0,sxy=0,sx2=0,n=validPts.length;
+    validPts.forEach(r=>{
+      const x=Math.log(r.strike/spot), y=r._iv_ult;
+      sx+=x; sy+=y; sxy+=x*y; sx2+=x*x;
+    });
+    const skew = n>1 ? (n*sxy-sx*sy)/(n*sx2-sx*sx) : 0;
+    const intercept = (sy-skew*sx)/n;
+
+    // Generar curva suavizada en 60 puntos
+    const kFrom = Math.max(xMin, spot*0.5);
+    const kTo   = Math.min(xMax, spot*2.0);
+    const curvePts = [];
+    for(let i=0;i<=60;i++){
+      const k = kFrom+(kTo-kFrom)*i/60;
+      const x = Math.log(k/spot);
+      const ivTeo = intercept + skew*x;  // IV teórica por regresión
+      if(ivTeo>0 && ivTeo<300) curvePts.push({x:xs(k), y:ys(ivTeo)});
+    }
+    if(curvePts.length<3) return;
+    ctx.strokeStyle=color; ctx.lineWidth=1.8; ctx.setLineDash([5,3]);
+    ctx.beginPath();
+    drawCatmullRom(ctx, curvePts, 0.5);
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  if(showCalls) drawTeoricoBS(calls, 'rgba(80,180,255,0.85)', 'CALL');
+  if(showPuts)  drawTeoricoBS(puts,  'rgba(80,100,255,0.85)', 'PUT');
+
+  // ── Bandas gaussianas ──
+  const atmRowG = [...calls,...puts].reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null);
+  const ivAtmG  = atmRowG ? atmRowG._iv_ult/100 : null;
+  const vhArr   = [...calls,...puts].map(r=>r.vol_hist_40r).filter(v=>v>0);
+  const vhFrac  = vhArr.length ? vhArr[0]/100 : null;
+  const T_years = ([...calls,...puts][0]?.dias_vto||16)/365;
+
   function drawGaussBell(vol, strokeCol, fillCol) {
     if(!vol || !spot || spot<=0) return;
     const sqrtT = Math.sqrt(T_years);
@@ -1036,71 +920,82 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     });
   }
 
-  // Curva teórica: σ(k) = cuadrática en ln(K/F) salida del fit único
-  function drawTeorica(f, Fwd) {
-    if (!f || !(Fwd > 0)) return;
-    const KFrom = Math.max(xMin, sMin - (sMax-sMin)*0.10);
-    const KTo   = Math.min(xMax, sMax + (sMax-sMin)*0.10);
-    if (!(KTo > KFrom)) return;
-    const N = 90, pts = [];
-    for (let i = 0; i <= N; i++) {
-      const K = KFrom + (KTo-KFrom)*i/N;
-      const iv = f(Math.log(K/Fwd));
-      if (iv > 0.5 && iv < 400) pts.push({ x: xs(K), y: ys(iv) });
+  if(ivAtmG)  drawGaussBell(ivAtmG,  'rgba(201,150,10,0.4)',  'rgba(201,150,10,0.05)');
+
+
+  // Grid Y
+  for(let i=0;i<=5;i++){
+    const v=yMin+(yMax-yMin)*i/5, y=ys(v);
+    ctx.strokeStyle='#1a1710'; ctx.lineWidth=0.5;
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(W-pad.r,y); ctx.stroke();
+    ctx.fillStyle='#706858'; ctx.font='9px monospace'; ctx.textAlign='right';
+    ctx.fillText(v.toFixed(1)+'%',pad.l-3,y+3);
+  }
+  // Grid X
+  for(let i=0;i<=6;i++){
+    const s=xMin+(xMax-xMin)*i/6, x=xs(s);
+    ctx.strokeStyle='#1a1710'; ctx.lineWidth=0.5;
+    ctx.beginPath(); ctx.moveTo(x,pad.t); ctx.lineTo(x,H-pad.b); ctx.stroke();
+    ctx.fillStyle='#706858'; ctx.font='9px monospace'; ctx.textAlign='center';
+    ctx.fillText('$'+Math.round(s).toLocaleString('es-AR'),x,H-pad.b+12);
+  }
+  // ATM
+  if(spot>=xMin&&spot<=xMax){
+    const xa=xs(spot);
+    ctx.strokeStyle='rgba(201,150,10,0.3)'; ctx.lineWidth=1; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(xa,pad.t); ctx.lineTo(xa,H-pad.b); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle='#C9960A'; ctx.font='9px monospace'; ctx.textAlign='center';
+    ctx.fillText('ATM',xa,H-pad.b+22);
+  }
+  function drawS(pts, getY, strokeCol, dotCol, dash=[], smooth=false) {
+    const valid = pts.filter(r=>getY(r)>0&&r.strike>=xMin&&r.strike<=xMax);
+    if(!valid.length) return;
+    if(valid.length>=2){
+      ctx.strokeStyle=strokeCol; ctx.lineWidth=1.2; ctx.setLineDash(dash);
+      ctx.beginPath();
+      if(smooth && valid.length>=3){
+        drawCatmullRom(ctx, valid.map(r=>({x:xs(r.strike),y:ys(getY(r))})));
+      } else {
+        valid.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(getY(r))):ctx.lineTo(xs(r.strike),ys(getY(r))));
+      }
+      ctx.stroke(); ctx.setLineDash([]);
     }
-    if (pts.length < 3) return;
-    ctx.strokeStyle = 'rgba(111,168,220,0.95)';
-    ctx.lineWidth = 1.8; ctx.setLineDash([5,3]);
-    ctx.beginPath();
-    pts.forEach((p,i)=> i ? ctx.lineTo(p.x,p.y) : ctx.moveTo(p.x,p.y));
-    ctx.stroke(); ctx.setLineDash([]);
+    valid.forEach(r=>{ ctx.beginPath(); ctx.arc(xs(r.strike),ys(getY(r)),3,0,Math.PI*2); ctx.fillStyle=dotCol; ctx.fill(); });
   }
-
-  // ── Series dentro de clip (lo que cae fuera del rango Y no ensucia el gráfico) ──
-  ctx.save();
-  ctx.beginPath(); ctx.rect(pad.l, pad.t, cW, cH); ctx.clip();
-
-  if (conVto) {
-    const atmRowG = [...calls,...puts].reduce((b,r)=>r._iv_ult>0&&Math.abs(r.strike-spot)<Math.abs((b?.strike||999999)-spot)?r:b,null);
-    const ivAtmG  = atmRowG ? atmRowG._iv_ult/100 : null;
-    const dRow    = [...calls,...puts].find(r=>r.dias_vto>0);
-    const T_years = (dRow?.dias_vto||16)/365;
-    if (ivAtmG) drawGaussBell(ivAtmG, 'rgba(201,150,10,0.4)', 'rgba(201,150,10,0.05)');
-  }
-
-  drawTeorica(fit, F);
+  // Orden de dibujo: líneas primero, luego puntos BO (chicos), luego puntos Últ (grandes encima)
+  // Así cuando coinciden, el punto del operado envuelve al de bid/offer
 
   // ── Líneas ──
   if(showCalls){
     if(soloUno){
-      const cBidL=callsBO.filter(r=>r.vi_bid>0&&inView(r));
-      const cOffL=callsBO.filter(r=>r.vi_offer>0&&inView(r));
+      const cBidL=callsBO.filter(r=>r.vi_bid>0&&r.strike>=xMin&&r.strike<=xMax);
+      const cOffL=callsBO.filter(r=>r.vi_offer>0&&r.strike>=xMin&&r.strike<=xMax);
       if(cBidL.length>=2){ctx.strokeStyle='rgba(58,176,122,0.7)';ctx.lineWidth=1.2;ctx.setLineDash([3,3]);ctx.beginPath();cBidL.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_bid)):ctx.lineTo(xs(r.strike),ys(r.vi_bid)));ctx.stroke();ctx.setLineDash([]);}
       if(cOffL.length>=2){ctx.strokeStyle='rgba(192,57,43,0.7)';ctx.lineWidth=1.2;ctx.setLineDash([3,3]);ctx.beginPath();cOffL.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_offer)):ctx.lineTo(xs(r.strike),ys(r.vi_offer)));ctx.stroke();ctx.setLineDash([]);}
     }
-    const cUlt=calls.filter(r=>r._iv_ult>0&&inView(r));
+    const cUlt=calls.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
     if(cUlt.length>=2){ctx.strokeStyle='rgba(220,220,220,0.7)';ctx.lineWidth=1.5;ctx.setLineDash([3,3]);ctx.beginPath();cUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult)));ctx.stroke();ctx.setLineDash([]);}
   }
   if(showPuts){
     if(soloUno){
-      const pBidL=putsBO.filter(r=>r.vi_bid>0&&inView(r));
-      const pOffL=putsBO.filter(r=>r.vi_offer>0&&inView(r));
+      const pBidL=putsBO.filter(r=>r.vi_bid>0&&r.strike>=xMin&&r.strike<=xMax);
+      const pOffL=putsBO.filter(r=>r.vi_offer>0&&r.strike>=xMin&&r.strike<=xMax);
       if(pBidL.length>=2){ctx.strokeStyle='rgba(58,176,122,0.7)';ctx.lineWidth=1.2;ctx.setLineDash([3,3]);ctx.beginPath();pBidL.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_bid)):ctx.lineTo(xs(r.strike),ys(r.vi_bid)));ctx.stroke();ctx.setLineDash([]);}
       if(pOffL.length>=2){ctx.strokeStyle='rgba(192,57,43,0.7)';ctx.lineWidth=1.2;ctx.setLineDash([3,3]);ctx.beginPath();pOffL.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r.vi_offer)):ctx.lineTo(xs(r.strike),ys(r.vi_offer)));ctx.stroke();ctx.setLineDash([]);}
     }
-    const pUlt=puts.filter(r=>r._iv_ult>0&&inView(r));
+    const pUlt=puts.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
     if(pUlt.length>=2){ctx.strokeStyle='rgba(201,150,10,0.7)';ctx.lineWidth=1.5;ctx.setLineDash([3,3]);ctx.beginPath();pUlt.forEach((r,i)=>i===0?ctx.moveTo(xs(r.strike),ys(r._iv_ult)):ctx.lineTo(xs(r.strike),ys(r._iv_ult)));ctx.stroke();ctx.setLineDash([]);}
   }
 
   // ── Puntos BO (radio 3, se dibujan antes) ──
   if(showCalls && soloUno){
-    callsBO.filter(inView).forEach(r=>{
+    callsBO.filter(r=>r.strike>=xMin&&r.strike<=xMax).forEach(r=>{
       if(r.vi_bid>0){ctx.beginPath();ctx.arc(xs(r.strike),ys(r.vi_bid),3,0,Math.PI*2);ctx.fillStyle='rgba(58,176,122,0.9)';ctx.fill();}
       if(r.vi_offer>0){ctx.beginPath();ctx.arc(xs(r.strike),ys(r.vi_offer),3,0,Math.PI*2);ctx.fillStyle='rgba(192,57,43,0.9)';ctx.fill();}
     });
   }
   if(showPuts && soloUno){
-    putsBO.filter(inView).forEach(r=>{
+    putsBO.filter(r=>r.strike>=xMin&&r.strike<=xMax).forEach(r=>{
       if(r.vi_bid>0){ctx.beginPath();ctx.arc(xs(r.strike),ys(r.vi_bid),3,0,Math.PI*2);ctx.fillStyle='rgba(58,176,122,0.9)';ctx.fill();}
       if(r.vi_offer>0){ctx.beginPath();ctx.arc(xs(r.strike),ys(r.vi_offer),3,0,Math.PI*2);ctx.fillStyle='rgba(192,57,43,0.9)';ctx.fill();}
     });
@@ -1108,10 +1003,13 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
 
   // ── Puntos Últ (radio 6 exterior + radio 3 interior de color BO si coincide) ──
   if(showCalls){
-    calls.filter(r=>r._iv_ult>0&&inView(r)).forEach(r=>{
+    const cUlt=calls.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
+    cUlt.forEach(r=>{
       const x=xs(r.strike),y=ys(r._iv_ult);
+      // Punto exterior: blanco si operado hoy, lila si IAMC
       const cUltCol = r.vi_ultimo>0 ? 'rgba(220,220,220,0.9)' : r.iv_source==='teorico' ? 'rgba(140,140,140,0.5)' : 'rgba(180,130,255,0.9)';
       ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fillStyle=cUltCol;ctx.fill();
+      // Punto interior: color BO si coincide (±0.5%), sino blanco pequeño
       const boRow=callsBO.find(b=>b.strike===r.strike);
       let innerCol='rgba(180,180,180,0.6)';
       if(boRow){
@@ -1123,8 +1021,10 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
     });
   }
   if(showPuts){
-    puts.filter(r=>r._iv_ult>0&&inView(r)).forEach(r=>{
+    const pUlt=puts.filter(r=>r._iv_ult>0&&r.strike>=xMin&&r.strike<=xMax);
+    pUlt.forEach(r=>{
       const x=xs(r.strike),y=ys(r._iv_ult);
+      // Punto exterior: amarillo si operado hoy, naranja claro si IAMC
       const pUltCol = r.vi_ultimo>0 ? 'rgba(220,220,0,0.95)' : r.iv_source==='teorico' ? 'rgba(140,140,140,0.5)' : 'rgba(255,160,50,0.9)';
       ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fillStyle=pUltCol;ctx.fill();
       const boRow=putsBO.find(b=>b.strike===r.strike);
@@ -1137,120 +1037,226 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
       ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fillStyle=innerCol;ctx.fill();
     });
   }
-
-  ctx.restore();
-
   // Leyenda
   let lx=pad.l; ctx.font='9px monospace'; ctx.textAlign='left';
-  for(const [label,col,isLine] of legendItems){
-    if(isLine){
-      ctx.strokeStyle=col; ctx.lineWidth=2; ctx.setLineDash([5,3]);
-      ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(lx+16,ly); ctx.stroke(); ctx.setLineDash([]);
-    } else {
-      ctx.beginPath(); ctx.arc(lx+8,ly,4,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
-    }
-    ctx.fillStyle='#c8c0b0';
-    ctx.fillText(label,lx+20,ly+3);
-    lx += 20 + ctx.measureText(label).width + 14;
+  for(const [label,col,isDash] of legendItems){
+    ctx.beginPath(); ctx.arc(lx+4,ly,4,0,Math.PI*2);
+    ctx.fillStyle=isDash?'transparent':col; ctx.fill();
+    if(isDash){ ctx.strokeStyle=col; ctx.lineWidth=1.5; ctx.stroke(); }
+    ctx.fillStyle='#c8c0b0'; ctx.fillText(label,lx+12,ly+3);
+    lx+=ctx.measureText(label).width+24;
   }
 }
 
-// ── RESUMEN ────────────────────────────────────────────────────────────────────
-function renderResumen() {
-  const subs = [...state.subyacentes].sort((a,b)=>(b.volumen_ars||0)-(a.volumen_ars||0));
-  if (!subs.length) { showEmpty('Sin datos de resumen'); return; }
 
-  const pc = state.resumen.put_call_ratio || {};
-  const totVol = subs.reduce((a,s)=>a+(s.volumen_ars||0),0);
-  const totOI  = subs.reduce((a,s)=>a+(s.open_interest||0),0);
-  const totOps = subs.reduce((a,s)=>a+(s.calls||0)+(s.puts||0),0);
-
-  let html = `<div style="padding:16px 20px;overflow:auto;height:100%">
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
-      ${[
-        ['Fecha datos', esc(state.resumen.fecha||'—'), ''],
-        ['Opciones', fmtN(totOps), '#C9960A'],
-        ['Vol ARS total', fmtM(totVol), '#C9960A'],
-        ['OI total', fmtN(totOI), ''],
-      ].map(([l,v,c])=>`<div class="res-card">
-        <div class="res-title">${l}</div>
-        <div style="font-size:15px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${c||'#e8e0cc'}">${v}</div>
-      </div>`).join('')}
-    </div>
-    <div class="resumen-grid" style="padding:0">`;
-  for (const s of subs) {
-    const r = pc[s.subyacente];
-    const pcTxt = (typeof r==='number'&&isFinite(r)) ? (r>PC_CAP?'>'+PC_CAP:r.toFixed(2)) : '—';
-    const pctVol = totVol>0 ? Math.round((s.volumen_ars||0)/totVol*100) : 0;
-    html += `<div class="res-card">
-      <div class="res-title">${esc(s.subyacente)}</div>
-      <div class="res-row"><span class="res-suby">${s.calls||0} calls · ${s.puts||0} puts</span><span class="res-val">P/C ${pcTxt}</span></div>
-      <div class="res-row"><span>Vol ARS</span><span class="res-val">${fmtM(s.volumen_ars)}</span></div>
-      <div class="res-row"><span>OI</span><span class="res-val">${fmtN(s.open_interest)}</span></div>
-      <div class="res-bar"><div class="res-bar-fill" style="width:${pctVol}%"></div></div>
-    </div>`;
+function renderCadena() {
+  const rows = getFilteredRows();
+  if (!rows.length) {
+    showEmpty('Sin opciones para los filtros seleccionados');
+    return;
   }
-  html += '</div></div>';
+
+  let html = `<div class="cadena-wrap"><table>
+    <thead><tr>
+      <th>Symbol</th>
+      <th class="center">Tipo</th>
+      <th>Strike</th>
+      <th class="center">Moneyness</th>
+      <th>Bid</th>
+      <th>Offer</th>
+      <th>Último</th>
+      <th>Últ Oper</th>
+      <th>Apertura</th>
+      <th>Mín</th>
+      <th>Máx</th>
+      <th>Var%</th>
+      <th>Vol ARS</th>
+      <th>Ops</th>
+      <th>OI</th>
+      <th>Var OI%</th>
+      <th>P.Teórico</th>
+      <th>Desvío</th>
+      <th title="VI del bid">VI Bid</th>
+      <th title="VI del offer">VI Off</th>
+      <th title="VI del último operado">VI Últ</th>
+      <th title="Volatilidad histórica 40 ruedas">VH%</th>
+      <th title="Delta">Δ</th>
+      <th title="Gamma">Γ</th>
+      <th title="Theta (por día)">Θ</th>
+      <th title="Vega (por 1% de IV)">Vega</th>
+      <th title="Rho (por 1% de tasa)">Rho</th>
+      <th>Vto</th>
+    </tr></thead>
+    <tbody>`;
+
+  for (const r of rows) {
+    const isATM = r.moneyness === 'ATM'; // la sanitización ya la recalculó bien
+    const varCls = (r.var_prima_pct||0) >= 0 ? 'pos' : 'neg';
+    const varOiCls = (r.var_oi_pct||0) >= 0 ? 'pos' : 'neg';
+    const desvCls = (r.desvio_teorico||0) >= 0 ? 'pos' : 'neg';
+    const mBadge = r.moneyness === 'ATM' ? 'badge-atm' : r.moneyness === 'ITM' ? 'badge-itm' : 'badge-otm';
+    const tipoCls = r.tipo === 'CALL' ? 'pos' : 'neg';
+    const vtoTxt = r.vencimiento ? vtoLabel(r.vencimiento) : '—';
+    const symTitle = r._raw ? ('Línea cruda del feed: ' + (r.symbol_raw||'')) : r.symbol;
+
+    html += `<tr class="${isATM?'atm':''}">
+      <td><div class="sym${r._raw?' raw':''}" title="${esc(symTitle)}">${esc(r.symbol)}</div></td>
+      <td class="center ${tipoCls}">${esc(r.tipo)||'—'}</td>
+      <td class="gold">$${fmt(r.strike)}</td>
+      <td class="center"><span class="${mBadge}">${esc(r.moneyness)||'—'}</span></td>
+      <td class="${r.bid_ask_source==='cierre'?'muted':'pos'}">${r.bid!=null?'$'+fmt(r.bid):'-'}</td>
+      <td class="${r.bid_ask_source==='cierre'?'muted':'neg'}">${r.ask!=null?'$'+fmt(r.ask):'-'}</td>
+      <td>${r.ultimo_precio!=null?'$'+fmt(r.ultimo_precio):'-'}</td>
+      <td class="pos">${r.veta_ultimo!=null?'$'+fmt(r.veta_ultimo):'-'}</td>
+      <td class="muted">${r.apertura_prima!=null?'$'+fmt(r.apertura_prima):'-'}</td>
+      <td class="muted">${r.min_prima!=null?'$'+fmt(r.min_prima):'-'}</td>
+      <td class="muted">${r.max_prima!=null?'$'+fmt(r.max_prima):'-'}</td>
+      <td class="${varCls}">${r.var_prima_pct!=null?(r.var_prima_pct>0?'+':'')+r.var_prima_pct.toFixed(2)+'%':'-'}</td>
+      <td>${r.volumen_ars!=null?fmtM(r.volumen_ars):'-'}</td>
+      <td>${r.cant_ops!=null?fmtN(r.cant_ops):'-'}</td>
+      <td>${r.open_interest!=null?fmtN(r.open_interest):'-'}</td>
+      <td class="${varOiCls}">${r.var_oi_pct!=null?(r.var_oi_pct>0?'+':'')+r.var_oi_pct.toFixed(2)+'%':'-'}</td>
+      <td>${r.precio_teorico!=null?'$'+fmt(r.precio_teorico):'-'}</td>
+      <td class="${desvCls}">${r.desvio_teorico!=null?(r.desvio_teorico>0?'+':'')+fmt(r.desvio_teorico):'-'}</td>
+      <td class="pos">${r.vi_bid!=null?r.vi_bid.toFixed(2)+'%':'-'}</td>
+      <td class="neg">${r.vi_offer!=null?r.vi_offer.toFixed(2)+'%':'-'}</td>
+      <td class="gold">${r._iv_ult!=null?r._iv_ult.toFixed(2)+'%':'-'}</td>
+      <td class="muted">${r.vol_hist_40r!=null?r.vol_hist_40r.toFixed(2)+'%':'-'}</td>
+      <td>${r.delta!=null?r.delta.toFixed(2):'-'}</td>
+      <td class="muted">${r.gamma!=null?r.gamma.toFixed(4):'-'}</td>
+      <td class="${(r.theta||0)<0?'neg':''}">${r.theta!=null?r.theta.toFixed(2):'-'}</td>
+      <td>${r.vega!=null?r.vega.toFixed(2):'-'}</td>
+      <td class="muted">${r.rho!=null?r.rho.toFixed(2):'-'}</td>
+      <td class="muted">${esc(vtoTxt)}</td>
+    </tr>`;
+  }
+
+  html += '</tbody></table></div>';
   document.getElementById('content').innerHTML = html;
 }
 
-// ── CSV ────────────────────────────────────────────────────────────────────────
-function exportCSV() {
+function renderResumen() {
+  const res = state.resumen;
+  const rankVol = res.ranking_volumen || [];
+  const rankOI  = res.ranking_oi || [];
+  const pc      = res.put_call_ratio || {};
+  const maxVol  = rankVol[0]?.volumen_ars || 1;
+  const maxOI   = rankOI[0]?.open_interest || 1;
+
+  let html = '<div class="resumen-grid">';
+
+  html += `<div class="res-card">
+    <div class="res-title">Ranking Volumen ARS</div>`;
+  for (const r of rankVol.slice(0,15)) {
+    const pct = r.volumen_ars / maxVol * 100;
+    html += `<div class="res-row">
+      <span class="res-suby">${esc(r.subyacente)}</span>
+      <span class="res-val">${fmtM(r.volumen_ars)}</span>
+    </div>
+    <div class="res-bar"><div class="res-bar-fill" style="width:${pct}%"></div></div>`;
+  }
+  html += '</div>';
+
+  html += `<div class="res-card">
+    <div class="res-title">Ranking Open Interest</div>`;
+  for (const r of rankOI.slice(0,15)) {
+    const pct = r.open_interest / maxOI * 100;
+    html += `<div class="res-row">
+      <span class="res-suby">${esc(r.subyacente)}</span>
+      <span class="res-val">${fmtN(r.open_interest)}</span>
+    </div>
+    <div class="res-bar"><div class="res-bar-fill" style="width:${pct}%"></div></div>`;
+  }
+  html += '</div>';
+
+  const pcEntries = Object.entries(pc).filter(([,v])=>typeof v==='number'&&isFinite(v)).sort((a,b)=>b[1]-a[1]);
+  if (pcEntries.length) {
+    html += `<div class="res-card" style="grid-column:1/-1">
+      <div class="res-title">Ratio Put/Call por Subyacente</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:8px">`;
+    for (const [suby, ratio] of pcEntries) {
+      const cls = ratio >= 1 ? 'neg' : ratio <= 0.7 ? 'pos' : '';
+      const tag = ratio >= 1 ? 'Bearish' : ratio < 0.7 ? 'Bullish' : 'Neutral';
+      const txt = ratio > PC_CAP ? '>' + PC_CAP : ratio.toFixed(2);
+      html += `<div style="background:#0e0d0a;border:0.5px solid #2a2510;border-radius:4px;padding:8px 10px">
+        <div style="font-size:12px;font-weight:600;color:#e8e0cc;margin-bottom:2px">${esc(suby)}</div>
+        <div class="res-val ${cls}" style="font-size:14px">${txt}</div>
+        <div style="font-size:9px;color:#706858;margin-top:2px">${tag}</div>
+      </div>`;
+    }
+    html += '</div></div>';
+  }
+
+  html += '</div>';
+  document.getElementById('content').innerHTML = html;
+}
+
+// ── EXPORT CSV ─────────────────────────────────────────────────────────────────
+function exportCsv() {
   const rows = getFilteredRows();
   if (!rows.length) return;
-  const cols = ['symbol','symbol_raw','tipo','strike','vencimiento','dias_vto','moneyness',
-    'ultimo_precio','vi_bid','vi_offer','vol_implicita','valor_temporal',
-    'precio_teorico','desvio_teorico','volumen_ars','open_interest','precio_suby'];
-  const sep = ';';  // es-AR / Excel
-  const head = cols.join(sep);
-  const lines = rows.map(r => cols.map(c => {
-    let v = r[c];
+  const cols = ['symbol','tipo','strike','moneyness','bid','ask','ultimo_precio','veta_ultimo','apertura_prima','min_prima','max_prima','var_prima_pct','volumen_ars','cant_ops','open_interest','var_oi_pct','precio_teorico','desvio_teorico','vi_bid','vi_offer','vi_ultimo','vol_implicita','vol_hist_40r','delta','gamma','theta','vega','rho','vencimiento','dias_vto'];
+  const head = ['Symbol','Tipo','Strike','Moneyness','Bid','Offer','Ultimo','Ult Oper','Apertura','Min','Max','Var%','Vol ARS','Ops','OI','Var OI%','P.Teorico','Desvio','VI Bid','VI Offer','VI Ult Oper','VI Ult','VH%','Delta','Gamma','Theta','Vega','Rho','Vencimiento','Dias Vto'];
+  const cell = v => {
     if (v == null) return '';
-    v = String(v).replace(/"/g,'""');
-    return /[",;\n]/.test(v) ? `"${v}"` : v;
-  }).join(sep));
-  const blob = new Blob(['\ufeff' + head + '\n' + lines.join('\n')], {type:'text/csv;charset=utf-8'});
+    const s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
+    return /[";\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  };
+  const csv = '\uFEFF' + [head.join(';'), ...rows.map(r => cols.map(cl => cell(r[cl])).join(';'))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `opciones_${state.currentSuby||'todos'}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `cadena_${state.currentSuby}_${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
 }
 
-// ── EVENTOS / INIT ─────────────────────────────────────────────────────────────
-function wireEvents() {
-  document.querySelectorAll('.tab-btn').forEach(b =>
-    b.addEventListener('click', () => switchView(b.dataset.view, b)));
-
-  const onFilterChange = () => {
-    if (!state.currentSuby) return;
-    updateSubyHeader(state.currentSuby);
-    renderView();
-  };
-  for (const id of ['ctrl-tipo','ctrl-vto','ctrl-show']) {
-    document.getElementById(id).addEventListener('change', onFilterChange);
-  }
-
-  document.getElementById('sidebar').addEventListener('click', e => {
-    const b = e.target.closest('.sb-btn');
-    if (b?.dataset.suby) loadCadena(b.dataset.suby);
-  });
-
-  document.getElementById('btn-csv').addEventListener('click', exportCSV);
+// ── FORMATTERS ─────────────────────────────────────────────────────────────────
+function fmt(v) {
+  if (v == null) return '—';
+  if (Math.abs(v) >= 1000) return v.toLocaleString('es-AR', {maximumFractionDigits:1});
+  return v.toLocaleString('es-AR', {maximumFractionDigits:2});
+}
+function fmtM(v) {
+  if (v == null) return '—';
+  if (v >= 1e9) return (v/1e9).toFixed(2)+'B';
+  if (v >= 1e6) return (v/1e6).toFixed(2)+'M';
+  if (v >= 1e3) return (v/1e3).toFixed(1)+'K';
+  return v.toFixed(0);
+}
+function fmtN(v) {
+  if (v == null) return '—';
+  return v.toLocaleString('es-AR');
 }
 
-document.getElementById('auth-screen').style.display = 'none';
-document.getElementById('app').style.display = 'block';
-wireEvents();
-loadData();
-setInterval(loadData, 30000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) loadData(); });
+// ── EVENT WIRING ───────────────────────────────────────────────────────────────
+function wireEvents() {
+  document.getElementById('sidebar').addEventListener('click', e => {
+    const btn = e.target.closest('.sb-btn');
+    if (btn) loadCadena(btn.dataset.suby);
+  });
+  document.getElementById('ctrl-tipo').addEventListener('change', renderView);
+  document.getElementById('ctrl-vto').addEventListener('change', renderView);
+  document.getElementById('ctrl-show').addEventListener('change', renderView);
+  document.querySelectorAll('.tab-btn').forEach(b =>
+    b.addEventListener('click', () => switchView(b.dataset.view, b)));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) loadData(); });
+  let rsT;
+  window.addEventListener('resize', () => {
+    clearTimeout(rsT);
+    rsT = setTimeout(() => { if (state.view === 'smile' && state.currentSuby) renderSmile(); }, 150);
+  });
+}
 
-let _rsT;
-window.addEventListener('resize', () => {
-  clearTimeout(_rsT);
-  _rsT = setTimeout(() => { if (state.view === 'smile' && state.currentSuby) renderSmile(); }, 200);
-});
+// ── INIT ───────────────────────────────────────────────────────────────────────
+async function init() {
+  wireEvents();
+  document.getElementById('app').style.display = 'block';
+  await loadData();
+  setInterval(loadData, 60000);
+}
+
+init();
 </script>
 </body>
 </html>
