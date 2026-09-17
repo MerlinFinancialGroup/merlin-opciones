@@ -1101,14 +1101,14 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
 
     def get_col_map(ncols):
         if ncols >= 80:
-            print(f"  [parser] usando COL_MAP_81 para tabla con {ncols} cols")
+# print(f"  [parser] usando COL_MAP_81 para tabla con {ncols} cols")
             return COL_MAP_81
         if ncols >= 77:
             return COL_MAP_78
         if ncols >= 74:
-            print(f"  [parser] usando COL_MAP_76 para tabla con {ncols} cols")
+# print(f"  [parser] usando COL_MAP_76 para tabla con {ncols} cols")
             return COL_MAP_76
-        print(f"  [parser] usando COL_MAP_73 para tabla con {ncols} cols")
+# print(f"  [parser] usando COL_MAP_73 para tabla con {ncols} cols")
         return COL_MAP_73
 
     COL_MAP = COL_MAP_78  # default, se sobreescribe por tabla
@@ -1240,7 +1240,8 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                                         "tasa_libre": current_tasa, "dias_vto": current_dias}
 
                             col_map = get_col_map(len(row))
-                            if len(row) not in (73, 78, 81):
+                            # Solo loguear si el número de columnas es muy inusual
+                            if len(row) not in (73, 74, 76, 78, 81):
                                 print(f"  [parser] fila {sym} tiene {len(row)} cols — revisar mapeo")
                             for col_idx, field in col_map.items():
                                 if field in ("symbol", "strike"): continue
@@ -1541,17 +1542,39 @@ async def scheduler():
     - Reintenta cada 15 min hasta las 20:00 si no lo consiguió
     """
     print("Scheduler de IAMC iniciado")
-    pdf_bytes, fecha = _pg_load_latest()
-    if pdf_bytes:
-        rows, resumen, fecha_str = parse_iamc_pdf(pdf_bytes)
+    # Intentar cargar rows ya parseadas desde iamc_opciones_data (evita reparsear el PDF)
+    rows = _pg_load_opciones()
+    if rows:
+        _, fecha = _pg_load_latest()
+        _, resumen, _ = parse_iamc_pdf(b"")  # solo para estructura de resumen
+        # Recalcular resumen desde rows
+        from collections import defaultdict
+        resumen = defaultdict(lambda: {"calls":0,"puts":0,"vol_ars":0,"oi":0})
+        for r in rows:
+            sub = r.get("subyacente","")
+            if r.get("tipo") == "CALL": resumen[sub]["calls"] += 1
+            elif r.get("tipo") == "PUT": resumen[sub]["puts"] += 1
+            resumen[sub]["vol_ars"] += r.get("volumen_ars") or 0
+            resumen[sub]["oi"]      += r.get("open_interest") or 0
         state["opciones"]    = rows
-        state["resumen"]     = resumen
-        state["fecha"]       = fecha
+        state["resumen"]     = dict(resumen)
+        state["fecha"]       = fecha or ""
         state["updated_at"]  = datetime.now(TZ_ARG).isoformat()
         state["descarga_ok"] = True
-        print(f"Cargado desde PG: {len(rows)} opciones, fecha {fecha} — stats: {_stats_rows(rows)}")
+        print(f"Cargado desde PG (rows): {len(rows)} opciones, fecha {fecha}")
     else:
-        await descargar_iamc_pdf()
+        # No hay datos en PG — descargar PDF
+        pdf_bytes, fecha = _pg_load_latest()
+        if pdf_bytes:
+            rows, resumen, fecha_str = parse_iamc_pdf(pdf_bytes)
+            state["opciones"]    = rows
+            state["resumen"]     = resumen
+            state["fecha"]       = fecha
+            state["updated_at"]  = datetime.now(TZ_ARG).isoformat()
+            state["descarga_ok"] = True
+            print(f"Cargado desde PG (pdf): {len(rows)} opciones, fecha {fecha}")
+        else:
+            await descargar_iamc_pdf()
     # Restaurar último estado de Veta desde PG
     _pg_load_veta_books()
 
