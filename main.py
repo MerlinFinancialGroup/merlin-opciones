@@ -1868,6 +1868,10 @@ async def get_cadena(
         row = dict(r)
         sym    = (row.get("symbol") or "").upper()
         sec_id = _symbol_to_security_id(row.get("symbol",""))
+        # Actualizar precio subyacente con dato RT si disponible
+        suby = (row.get("subyacente") or "").upper()
+        if suby and suby in _precios_suby:
+            row["precio_suby"] = _precios_suby[suby]
         # Primero buscar en _veta_md (datos M: más frescos)
         md_snap = _veta_md.get(sym)
         # Luego en _veta_books (datos B: con profundidad)
@@ -1940,7 +1944,11 @@ async def get_cadena(
 
     tasa_oct = _tasas_rt.get("2026-10-16")
     tasa_dic = _tasas_rt.get("2026-12-18")
+    # Precio RT del subyacente actual
+    suby_actual = state.get("currentSuby") or (result[0].get("subyacente") if result else None)
+    precio_suby_rt = _precios_suby.get((suby_actual or "").upper())
     return {"fecha": state["fecha"], "total": len(result), "data": result,
+            "precio_suby_rt": precio_suby_rt,
             "tasas_rt": {"oct": round(tasa_oct*100,2) if tasa_oct else None,
                          "dic": round(tasa_dic*100,2) if tasa_dic else None},
             "cierre_ba": mostrar_cierre_ba, "cierre_ba_fecha": state.get("_cierre_ba_fecha")}
@@ -2004,7 +2012,8 @@ LECAP_CONFIG = {
     "2026-10-16": {"ticker": "S3006",  "sec_id": "bm_MERV_S3006_CI",  "tem": 0.0255, "fecha_vto_lecap": "2026-10-30"},
     "2026-12-18": {"ticker": "T30J6",  "sec_id": "bm_MERV_T30J6_CI",  "tem": 0.0255, "fecha_vto_lecap": "2026-12-30"},
 }
-_tasas_rt: dict = {}  # vencimiento_opcion → tasa_anual_efectiva en tiempo real
+_tasas_rt: dict   = {}  # vencimiento_opcion → tasa_anual_efectiva en tiempo real
+_precios_suby: dict = {}  # "GGAL" → precio RT del subyacente
 import collections as _collections
 _veta_raw_m = _collections.deque(maxlen=80)
 
@@ -2100,7 +2109,12 @@ def _dispatch_veta(item: str):
                         tea = _calc_tasa_lecap(precio, vto_op)
                         if tea:
                             _tasas_rt[vto_op] = tea
-                            print(f"[LECAP] {cfg['ticker']} precio={precio} → TEA={tea*100:.2f}%")
+            # Detectar subyacentes y actualizar precio RT
+            sym_upper = snap["symbol"].upper()
+            if sym_upper in {(r.get("subyacente") or "").upper() for r in state.get("opciones", [])}:
+                ultimo = snap.get("ultimo") or snap.get("bid") or snap.get("ask")
+                if ultimo and ultimo > 0:
+                    _precios_suby[sym_upper] = ultimo
     elif item.startswith("B:"):
         sec_id, book = _parse_book_msg(item[2:])
         if sec_id and book:
@@ -2251,10 +2265,15 @@ async def _veta_ws_loop():
                     await ws.send(json.dumps({"_req": "S", "topicType": "book", "topics": book_topics, "replace": False}))
                     await asyncio.sleep(0.05)
                 # Suscribir LECAPs de referencia de tasa
+                # Suscribir LECAPs de tasa
                 lecap_sec_ids = [cfg["sec_id"] for cfg in LECAP_CONFIG.values()]
                 await ws.send(json.dumps({"_req": "S", "topicType": "md",   "topics": [f"md.{s}"   for s in lecap_sec_ids], "replace": False}))
                 await ws.send(json.dumps({"_req": "S", "topicType": "book", "topics": [f"book.{s}" for s in lecap_sec_ids], "replace": False}))
-                print(f"[Veta WS] Suscrito a {len(todas)} opciones (md + book) + {len(lecap_sec_ids)} LECAPs tasa")
+                # Suscribir subyacentes para precio en tiempo real
+                subyacentes_uniq = list(set(r["subyacente"] for r in state["opciones"] if r.get("subyacente")))
+                suby_sec_ids = [f"bm_MERV_{s}_24hs" for s in subyacentes_uniq]
+                await ws.send(json.dumps({"_req": "S", "topicType": "md", "topics": [f"md.{s}" for s in suby_sec_ids], "replace": False}))
+                print(f"[Veta WS] Suscrito a {len(todas)} opciones + {len(lecap_sec_ids)} LECAPs + {len(suby_sec_ids)} subyacentes")
 
                 msg_count = 0
                 async for message in ws:
