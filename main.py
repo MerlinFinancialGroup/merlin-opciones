@@ -1,10 +1,17 @@
-import os, asyncio, httpx, io, re, json
+import os, asyncio, httpx, io, re, json, logging
 from collections import Counter
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, UploadFile, File, Query, Request
+from fastapi import FastAPI, UploadFile, File, Query, Request, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("merlin")
 
 try:
     import pdfplumber
@@ -24,10 +31,40 @@ VETA_COOKIE   = os.getenv("VETA_COOKIE", "")
 VETA_ACCOUNT  = os.getenv("VETA_ACCOUNT", "")
 TZ_ARG        = ZoneInfo("America/Argentina/Buenos_Aires")
 
+# ── Tasas libre de riesgo por vencimiento (centralizadas) ─────────────────────
+# Fuente: IAMC PDF. Actualizar cuando aparezca un vencimiento nuevo.
+_TASA_DEFAULT = 0.2287
+_TASA_FIJA: dict[str, float] = {
+    "2026-10-16": 0.2287,
+    "2026-12-18": 0.2418,
+}
+
+def _get_tasa(vto: str, tasas_rt: dict | None = None) -> float:
+    """Devuelve la tasa libre para el vencimiento dado. Logguea si no la encuentra."""
+    rt = (tasas_rt or {}).get(vto)
+    if rt:
+        return rt
+    fija = _TASA_FIJA.get(vto)
+    if fija:
+        return fija
+    logger.warning(f"Tasa no encontrada para vencimiento {vto!r} — usando default {_TASA_DEFAULT}")
+    return _TASA_DEFAULT
+
+
 IAMC_BASE = "https://www.iamc.com.ar/Informe/InformeDiarioOpciones"
 
 app = FastAPI(title="Merlin Opciones API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# ── CORS: solo orígenes propios ───────────────────────────────────────────────
+_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS",
+    "https://merlin-financial-group.netlify.app,https://web-production-2a938.up.railway.app"
+).split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 
 # ── Estado global ──────────────────────────────────────────────────────────────
 state = {
@@ -62,16 +99,6 @@ def _pg_init():
                 qty_bid     NUMERIC,
                 qty_ask     NUMERIC,
                 ultimo      NUMERIC,
-                saved_at    TIMESTAMP DEFAULT NOW(),
-                PRIMARY KEY (symbol, fecha)
-            );
-            CREATE TABLE IF NOT EXISTS bid_ask_cierre (
-                symbol      TEXT NOT NULL,
-                fecha       DATE NOT NULL,
-                bid         NUMERIC,
-                ask         NUMERIC,
-                qty_bid     NUMERIC,
-                qty_ask     NUMERIC,
                 saved_at    TIMESTAMP DEFAULT NOW(),
                 PRIMARY KEY (symbol, fecha)
             );
@@ -178,9 +205,9 @@ def _pg_init():
             );
         """)
         conn.commit(); cur.close(); conn.close()
-        print("PG init OK")
+        logger.info("PG init OK")
     except Exception as e:
-        print(f"PG init error: {e}")
+        logger.error(f"PG init error: {e}")
 
 def _pg_save_pdf(pdf_bytes: bytes, fecha: str):
     if not HAS_PG or not DATABASE_URL: return
@@ -193,9 +220,9 @@ def _pg_save_pdf(pdf_bytes: bytes, fecha: str):
             fecha=EXCLUDED.fecha, updated_at=NOW()
         """, (psycopg2.Binary(pdf_bytes), fecha))
         conn.commit(); cur.close(); conn.close()
-        print(f"PDF guardado en PG: {fecha}")
+        logger.info(f"PDF guardado en PG: {fecha}")
     except Exception as e:
-        print(f"PG save pdf error: {e}")
+        logger.error(f"PG save pdf error: {e}")
 
 def _pg_save_opciones(rows: list, fecha: str):
     if not HAS_PG or not DATABASE_URL or not rows: return
@@ -220,9 +247,9 @@ def _pg_save_opciones(rows: list, fecha: str):
                 r.get("tasa_libre"), r.get("dias_vto"),
             ))
         conn.commit(); cur.close(); conn.close()
-        print(f"Opciones guardadas en PG: {len(rows)} filas, fecha {fecha}")
+        logger.info(f"Opciones guardadas en PG: {len(rows)} filas, fecha {fecha}")
     except Exception as e:
-        print(f"PG save opciones error: {e}")
+        logger.error(f"PG save opciones error: {e}")
 
 def _pg_save_veta_books():
     """Persiste _veta_books en PG para sobrevivir reinicios."""
@@ -238,7 +265,7 @@ def _pg_save_veta_books():
             """, (sec_id, json.dumps(data)))
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
-        print(f"PG save veta_books error: {e}")
+        logger.error(f"PG save veta_books error: {e}")
 
 def _pg_load_veta_books():
     """Restaura _veta_books desde PG al arrancar."""
@@ -250,9 +277,9 @@ def _pg_load_veta_books():
         for sec_id, data in rows:
             _veta_books[sec_id] = data if isinstance(data, dict) else json.loads(data)
         cur.close(); conn.close()
-        if rows: print(f"[PG] Restaurados {len(rows)} veta_books")
+        if rows: logger.info(f"[PG] Restaurados {len(rows)} veta_books")
     except Exception as e:
-        print(f"PG load veta_books error: {e}")
+        logger.error(f"PG load veta_books error: {e}")
 
 def _pg_save_cierres(fecha: str):
     """Guarda los últimos operados de _veta_md en opciones_cierres para la fecha dada."""
@@ -261,7 +288,7 @@ def _pg_save_cierres(fecha: str):
     saved = 0
     try:
         conn = _pg_conn(); cur = conn.cursor()
-        TASA_VTO = {k: (_tasas_rt.get(k) or v) for k, v in {"2026-10-16": 0.2287, "2026-12-18": 0.2418}.items()}
+        TASA_VTO = {vto: _get_tasa(vto, _tasas_rt) for vto in list(_TASA_FIJA) + list(_tasas_rt or {})}
         for sym, snap in _veta_md.items():
             ultimo = snap.get("ultimo")
             if not ultimo: continue
@@ -274,7 +301,7 @@ def _pg_save_cierres(fecha: str):
             vi_calc = None
             if S and K and dias and dias > 0 and tipo:
                 T = dias / 365.0
-                r_rate = TASA_VTO.get(vto, 0.2287)
+                r_rate = _get_tasa(vto, _tasas_rt)
                 vi_calc = _calc_iv(ultimo, S, K, T, r_rate, tipo)
             # Bid/ask del cierre de Veta
             bid_c = snap.get("bid")
@@ -300,9 +327,9 @@ def _pg_save_cierres(fecha: str):
                   bid_c, ask_c))
             saved += 1
         conn.commit(); cur.close(); conn.close()
-        print(f"[PG] Cierres guardados: {saved} opciones para {fecha}")
+        logger.info(f"[PG] Cierres guardados: {saved} opciones para {fecha}")
     except Exception as e:
-        print(f"PG save cierres error: {e}")
+        logger.error(f"PG save cierres error: {e}")
 
 def _pg_save_bid_ask_cierre(fecha: str):
     """Guarda el último bid/ask de cada opción a las 17:00 para consulta post-rueda."""
@@ -337,9 +364,9 @@ def _pg_save_bid_ask_cierre(fecha: str):
             """, (sym, fecha, bid, ask, qty_bid, qty_ask))
             saved += 1
         conn.commit(); cur.close(); conn.close()
-        print(f"[PG] Bid/Ask cierre guardados: {saved} opciones para {fecha}")
+        logger.info(f"[PG] Bid/Ask cierre guardados: {saved} opciones para {fecha}")
     except Exception as e:
-        print(f"PG save bid_ask_cierre error: {e}")
+        logger.error(f"PG save bid_ask_cierre error: {e}")
 
 def _pg_load_bid_ask_cierre(fecha: str) -> dict:
     """Carga bid/ask del cierre de una fecha para mostrar en la tabla."""
@@ -354,7 +381,7 @@ def _pg_load_bid_ask_cierre(fecha: str) -> dict:
         cur.close(); conn.close()
         return {r[0]: {"bid": r[1], "ask": r[2], "qty_bid": r[3], "qty_ask": r[4]} for r in rows}
     except Exception as e:
-        print(f"PG load bid_ask_cierre error: {e}")
+        logger.error(f"PG load bid_ask_cierre error: {e}")
         return {}
 
 def _pg_save_resumen_diario(rows: list, fecha: str):
@@ -401,9 +428,9 @@ def _pg_save_resumen_diario(rows: list, fecha: str):
                   min(dias) if dias else None,
                   max(dias) if dias else None))
         conn.commit(); cur.close(); conn.close()
-        print(f"[PG] Resumen diario guardado: {len(by_suby)} subyacentes para {fecha}")
+        logger.info(f"[PG] Resumen diario guardado: {len(by_suby)} subyacentes para {fecha}")
     except Exception as e:
-        print(f"PG save resumen error: {e}")
+        logger.error(f"PG save resumen error: {e}")
 
 def _pg_save_cierres_iamc(rows: list, fecha: str):
     """Guarda todos los datos de la cadena IAMC en opciones_cierres para histórico."""
@@ -411,7 +438,7 @@ def _pg_save_cierres_iamc(rows: list, fecha: str):
     saved = 0
     try:
         conn = _pg_conn(); cur = conn.cursor()
-        TASA_VTO = {k: (_tasas_rt.get(k) or v) for k, v in {"2026-10-16": 0.2287, "2026-12-18": 0.2418}.items()}
+        TASA_VTO = {vto: _get_tasa(vto, _tasas_rt) for vto in list(_TASA_FIJA) + list(_tasas_rt or {})}
         for r in rows:
             sym = r.get("symbol")
             if not sym: continue
@@ -421,7 +448,7 @@ def _pg_save_cierres_iamc(rows: list, fecha: str):
             tipo = r.get("tipo")
             vto  = r.get("vencimiento")
             ultimo = r.get("ultimo_precio")
-            r_rate = TASA_VTO.get(vto, 0.2287)
+            r_rate = _get_tasa(vto, _tasas_rt)
             T = dias / 365.0 if dias and dias > 0 else None
             vi_calc = None
             if ultimo and S and K and T and tipo:
@@ -480,9 +507,9 @@ def _pg_save_cierres_iamc(rows: list, fecha: str):
             ))
             saved += 1
         conn.commit(); cur.close(); conn.close()
-        print(f"[PG] Cierres IAMC guardados: {saved} opciones para {fecha}")
+        logger.info(f"[PG] Cierres IAMC guardados: {saved} opciones para {fecha}")
     except Exception as e:
-        print(f"PG save cierres IAMC error: {e}")
+        logger.error(f"PG save cierres IAMC error: {e}")
 
 def _pg_load_cierre_anterior(symbol: str, fecha_hoy: str) -> dict | None:
     """Carga el último cierre disponible para un symbol antes de fecha_hoy."""
@@ -502,7 +529,7 @@ def _pg_load_cierre_anterior(symbol: str, fecha_hoy: str) -> dict | None:
                     "vi_calc": row[2], "precio_suby": row[3]}
         return None
     except Exception as e:
-        print(f"PG load cierre error: {e}")
+        logger.error(f"PG load cierre error: {e}")
         return None
 
 def _pg_load_latest():
@@ -514,7 +541,7 @@ def _pg_load_latest():
         cur.close(); conn.close()
         if row: return bytes(row[0]), row[1]
     except Exception as e:
-        print(f"PG load error: {e}")
+        logger.error(f"PG load error: {e}")
     return None, None
 
 def _pg_load_opciones(fecha: str = None):
@@ -532,7 +559,7 @@ def _pg_load_opciones(fecha: str = None):
         cur.close(); conn.close()
         return rows
     except Exception as e:
-        print(f"PG load opciones error: {e}")
+        logger.error(f"PG load opciones error: {e}")
         return []
 
 # ── Mapeo prefijo de opción → subyacente ───────────────────────────────────────
@@ -715,7 +742,7 @@ def _sanity_fix_row(r: dict):
         r["desvio_teorico"] = None
     # IV imposible = solver roto → IV y griegas derivadas no confiables
     iv = r.get("vol_implicita")
-    if iv is not None and not (0.5 <= iv <= 300):
+    if iv is not None and not (0.5 <= iv <= 500):
         r["vol_implicita"] = None
         for f in ("delta", "gamma", "theta", "vega", "rho"):
             r[f] = None
@@ -726,14 +753,9 @@ def _sanity_fix_row(r: dict):
     return r
 
 def _norm_cdf(x):
-    """CDF de la normal estándar (aproximación de Abramowitz & Stegun)."""
+    """CDF de la normal estándar — usa math.erf (stdlib, exacto)."""
     import math
-    a1,a2,a3,a4,a5,p = 0.254829592,-0.284496736,1.421413741,-1.453152027,1.061405429,0.3275911
-    sign = 1 if x >= 0 else -1
-    x = abs(x)
-    t = 1.0 / (1.0 + p * x)
-    y = 1.0 - (((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*math.exp(-x*x)
-    return 0.5 * (1.0 + sign * y)
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 def _bs_price(S, K, T, r, sigma, tipo):
     """Precio Black-Scholes europeo."""
@@ -770,7 +792,7 @@ def _calc_iv(precio_mercado, S, K, T, r, tipo, tol=1e-5, max_iter=100):
         if hi - lo < 1e-7:
             break
     iv = (lo + hi) / 2 * 100
-    return round(iv, 4) if 0.5 <= iv <= 300 else None
+    return round(iv, 4) if 0.5 <= iv <= 500 else None
 
 def _enrich_iv(rows: list) -> list:
     """
@@ -790,8 +812,11 @@ def _enrich_iv(rows: list) -> list:
         K  = r.get("strike")
         sub = r.get("subyacente","")
         if iv and iv > 0 and S and K and abs(K - S) / S < 0.05:
-            if sub not in iv_atm_by_suby:
-                iv_atm_by_suby[sub] = iv
+            prev_k = iv_atm_by_suby.get(sub, {}).get("k") if isinstance(iv_atm_by_suby.get(sub), dict) else None
+            if prev_k is None or abs(K - S) < abs(prev_k - S):
+                iv_atm_by_suby[sub] = {"iv": iv, "k": K}
+    # Aplanar a {sub: iv_value}
+    iv_atm_by_suby = {sub: v["iv"] if isinstance(v, dict) else v for sub, v in iv_atm_by_suby.items()}
 
     for r in rows:
         if r.get("vol_implicita") is not None:
@@ -805,7 +830,7 @@ def _enrich_iv(rows: list) -> list:
         vto   = r.get("vencimiento")
         sub   = r.get("subyacente", "")
         tasa_pct = r.get("tasa_libre")
-        r_rate = (tasa_pct / 100) if tasa_pct else TASA_VTO.get(vto, 0.2287)
+        r_rate = (tasa_pct / 100) if tasa_pct else _get_tasa(vto, _tasas_rt)
 
         if not S or S <= 0 or not K or K <= 0 or not dias or dias <= 0:
             r["iv_source"] = None
@@ -848,7 +873,9 @@ def _pf(v):
         s = str(v).replace('%','').replace(',','').strip()
         if s in ('', '-', '—'): return None
         return float(s)
-    except: return None
+    except Exception as e:
+        logger.debug(f"_pf parse error: {e}")
+        return None
 
 def _pi(v):
     f = _pf(v)
@@ -1183,7 +1210,7 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                     current_tipo = 'PUT'
 
                 # Encabezado de subyacente: solo fallback
-                for line in lines_tmp if False else text.split('\n'):
+                for line in text.split('\n'):
                     m_s = re.match(r'^(.+?)\s*\(([A-Z0-9]{2,6})\)\s*$', line.strip())
                     if m_s and len(m_s.group(2)) <= 6:
                         current_suby = m_s.group(2)
@@ -1277,7 +1304,7 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
                                 resumen_pc_oi[suby_acc]["call"] += oi
 
     except Exception as e:
-        print(f"PDF parse error: {e}")
+        logger.error(f"PDF parse error: {e}")
         import traceback; traceback.print_exc()
 
     # ── NUEVO: dedupe por símbolo — conservar la fila más completa ──
@@ -1315,24 +1342,24 @@ def parse_iamc_pdf(pdf_bytes: bytes) -> tuple[list, dict, str]:
     rows = _enrich_iv(rows)
     iv_calc = sum(1 for r in rows if r.get("iv_source") == "calculada")
     iv_iamc = sum(1 for r in rows if r.get("iv_source") == "iamc")
-    print(f"[parser] IV: {iv_iamc} del IAMC + {iv_calc} calculadas desde último precio")
+    logger.info(f"[parser] IV: {iv_iamc} del IAMC + {iv_calc} calculadas desde último precio")
 
     # ── Diagnóstico ──
     if mixed:
-        print(f"[parser] {len(mixed)} filas reasignadas por símbolo (mezcla detectada). "
+        logger.info(f"[parser] {len(mixed)} filas reasignadas por símbolo (mezcla detectada). "
               f"Muestra: {mixed[:10]}")
     if recovered_count:
-        print(f"[parser] {recovered_count} filas recuperadas desde línea colapsada")
+        logger.info(f"[parser] {recovered_count} filas recuperadas desde línea colapsada")
     if garbage_skipped:
-        print(f"[parser] {garbage_skipped} filas de basura descartadas (rankings/otras)")
+        logger.info(f"[parser] {garbage_skipped} filas de basura descartadas (rankings/otras)")
     if dup_count:
-        print(f"[parser] {dup_count} filas duplicadas fusionadas (rankings vs cadena)")
+        logger.info(f"[parser] {dup_count} filas duplicadas fusionadas (rankings vs cadena)")
     print(f"[parser] Fuentes de vencimiento: {dict(vto_sources)}")
     if used_static_series:
-        print(f"[parser] Series resueltas con fallback estático: {sorted(used_static_series)} — "
+        logger.info(f"[parser] Series resueltas con fallback estático: {sorted(used_static_series)} — "
               f"actualizar SERIE_VTO_FALLBACK cuando cambien los vencimientos")
     if unmapped:
-        print(f"[parser] ⚠ Prefijos sin mapear: {sorted(unmapped)[:20]} — "
+        logger.info(f"[parser] ⚠ Prefijos sin mapear: {sorted(unmapped)[:20]} — "
               f"completar OPCION_MAP. Ver /admin/debug-symbols")
 
     resumen = {
@@ -1701,8 +1728,22 @@ async def validar_stoken(token: str) -> bool:
             valid = r.status_code == 200 and r.json() == True
             _token_cache[token] = {"valid": valid, "ts": datetime.now().timestamp()}
             return valid
-    except:
+    except Exception as e:
+        logger.warning(f"validar_stoken error: {e}")
         return cached["valid"] if cached else False
+
+async def require_auth(authorization: str = Header(None)) -> str:
+    """
+    Dependency de FastAPI: valida el token Supabase del header Authorization.
+    Extrae el stoken y lo verifica contra Supabase RPC.
+    Uso: @app.get("/ruta", dependencies=[Depends(require_auth)])
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token requerido")
+    token = authorization[7:].strip()
+    if not await validar_stoken(token):
+        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+    return token
 
 HTML_403 = """<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>body{background:#0e0d0a;color:#e8e0cc;font-family:'Segoe UI',sans-serif;
@@ -1737,7 +1778,7 @@ def health():
         "descarga_ok": state["descarga_ok"],
     }
 
-@app.get("/api/opciones/cadena")
+@app.get("/api/opciones/cadena", dependencies=[Depends(require_auth)])
 async def get_cadena(
     subyacente: str = Query(None),
     tipo: str = Query(None),
@@ -1826,7 +1867,7 @@ async def get_cadena(
             dias = row.get("dias_vto")
             tipo_op = row.get("tipo")
             vto  = row.get("vencimiento")
-            r_rate = TASA_VTO.get(vto, 0.2287)
+            r_rate = _get_tasa(vto, _tasas_rt)
             if S and K and dias and dias > 0:
                 T = dias / 365.0
                 if bid:    row["vi_bid"]    = _calc_iv(bid,    S, K, T, r_rate, tipo_op)
@@ -1859,18 +1900,18 @@ async def get_cadena(
                          "dic": round(tasa_dic*100,2) if tasa_dic else None},
             "cierre_ba": mostrar_cierre_ba, "cierre_ba_fecha": state.get("_cierre_ba_fecha")}
 
-@app.get("/api/veta/debug-md")
+@app.get("/api/veta/debug-md", dependencies=[Depends(require_auth)])
 async def veta_debug_md(symbol: str = None):
     if symbol:
         s = _norm_veta_sym(symbol)
         return {"lookup": s, "found": _veta_md.get(s)}
     return {"count": len(_veta_md), "keys": list(_veta_md)[:30], "sample": list(_veta_md.values())[:5]}
 
-@app.get("/api/veta/debug-raw")
+@app.get("/api/veta/debug-raw", dependencies=[Depends(require_auth)])
 async def veta_debug_raw(n: int = 10):
     return {"recent": list(_veta_raw_m)[-n:]}
 
-@app.get("/api/opciones/subyacentes")
+@app.get("/api/opciones/subyacentes", dependencies=[Depends(require_auth)])
 async def get_subyacentes():
     """Lista de subyacentes disponibles con resumen de actividad."""
     subyacentes = {}
@@ -1891,12 +1932,12 @@ async def get_subyacentes():
         "data": sorted(subyacentes.values(), key=lambda x: x["volumen_ars"], reverse=True)
     }
 
-@app.get("/api/opciones/resumen")
+@app.get("/api/opciones/resumen", dependencies=[Depends(require_auth)])
 async def get_resumen():
     """Ranking de volumen, OI y ratio put/call por subyacente."""
     return {"fecha": state["fecha"], "updated_at": state["updated_at"], **state["resumen"]}
 
-@app.get("/api/opciones/symbol/{symbol}")
+@app.get("/api/opciones/symbol/{symbol}", dependencies=[Depends(require_auth)])
 async def get_symbol(symbol: str):
     """Datos de una opción específica por symbol."""
     rows = [r for r in state["opciones"] if r.get("symbol","").upper() == symbol.upper()]
@@ -2120,7 +2161,9 @@ def _parse_md_msg(raw: str):
             "cant_ops": von,
             "ts": datetime.now(TZ_ARG).isoformat()
         }
-    except: return None, None
+    except Exception as e:
+        logger.debug(f"_pf parse error: {e}")
+        return None, None
 
 async def _veta_ws_loop():
     """Loop WebSocket de Veta — mantiene conexión y actualiza _veta_books."""
@@ -2197,7 +2240,7 @@ async def _veta_ws_loop():
             print(f"[Veta WS] Error: {e}. Reconectando en 10s...")
         await asyncio.sleep(10)
 
-@app.get("/admin/veta-status")
+@app.get("/admin/veta-status", dependencies=[Depends(require_auth)])
 async def veta_status():
     """Estado del WebSocket de Veta y books recibidos."""
     return {
@@ -2222,7 +2265,7 @@ async def get_orderbook(symbol: str):
     return {"symbol": symbol, "security_id": sec_id, "book": None,
             "msg": "Suscribiendo — reintentar en 2s"}
 
-@app.get("/api/opciones/iv_surface/{subyacente}")
+@app.get("/api/opciones/iv_surface/{subyacente}", dependencies=[Depends(require_auth)])
 async def get_iv_surface(subyacente: str):
     """Superficie de volatilidad implícita: strike vs vencimiento."""
     rows = [r for r in state["opciones"]
@@ -2245,8 +2288,8 @@ async def get_iv_surface(subyacente: str):
     return {"subyacente": subyacente, "fecha": state["fecha"], "data": surface}
 
 # ── Admin endpoints ────────────────────────────────────────────────────────────
-@app.get("/admin/reparse")
-@app.post("/admin/reparse")
+@app.get("/admin/reparse", dependencies=[Depends(require_auth)])
+@app.post("/admin/reparse", dependencies=[Depends(require_auth)])
 async def admin_reparse():
     """Reparsea el PDF que ya está en PostgreSQL con el parser actual."""
     pdf_bytes, fecha = _pg_load_latest()
@@ -2273,8 +2316,8 @@ async def admin_reparse():
         "muestra_ggal_con_datos": ggal_con_datos or ggal[:3],
     }
 
-@app.get("/admin/refresh")
-@app.post("/admin/refresh")
+@app.get("/admin/refresh", dependencies=[Depends(require_auth)])
+@app.post("/admin/refresh", dependencies=[Depends(require_auth)])
 async def admin_refresh(fecha_str: str = Query(None)):
     """Fuerza descarga del PDF de IAMC."""
     target = None
@@ -2289,7 +2332,7 @@ async def admin_refresh(fecha_str: str = Query(None)):
         "error": state["error"],
     }
 
-@app.post("/admin/upload-pdf")
+@app.post("/admin/upload-pdf", dependencies=[Depends(require_auth)])
 async def admin_upload_pdf(pdf: UploadFile = File(...)):
     """Sube manualmente el PDF de IAMC (fallback si la descarga automática falla)."""
     content = await pdf.read()
@@ -2318,7 +2361,7 @@ async def admin_upload_pdf(pdf: UploadFile = File(...)):
         "subyacentes": len(set(r["subyacente"] for r in rows if r.get("subyacente"))),
     }
 
-@app.get("/api/opciones/disponibles")
+@app.get("/api/opciones/disponibles", dependencies=[Depends(require_auth)])
 async def get_disponibles():
     """Muestra qué fechas tiene disponibles IAMC en /informediario/ sin descargar nada."""
     try:
@@ -2366,7 +2409,7 @@ async def get_disponibles():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-@app.get("/admin/debug-symbols")
+@app.get("/admin/debug-symbols", dependencies=[Depends(require_auth)])
 async def debug_symbols():
     """Prefijos de símbolos vistos, a qué subyacente resolvieron y conteo.
     Sirve para completar OPCION_MAP cuando aparece un subyacente nuevo."""
@@ -2387,7 +2430,7 @@ async def debug_symbols():
         ],
     }
 
-@app.get("/admin/debug-parser")
+@app.get("/admin/debug-parser", dependencies=[Depends(require_auth)])
 async def debug_parser(suby: str = "GGAL"):
     """Muestra filas crudas extraídas por pdfplumber para debug del parser."""
     if not HAS_PDF:
@@ -2432,7 +2475,7 @@ async def debug_parser(suby: str = "GGAL"):
         "filas_muestra": resultado,
     }
 
-@app.get("/admin/debug-page/{page_num}")
+@app.get("/admin/debug-page/{page_num}", dependencies=[Depends(require_auth)])
 async def debug_page(page_num: int):
     """Muestra el texto y tablas crudas de una página específica del PDF."""
     if not HAS_PDF:
@@ -2465,7 +2508,7 @@ async def debug_page(page_num: int):
         import traceback
         return {"error": str(e), "traceback": traceback.format_exc()}
 
-@app.get("/admin/debug-iamc")
+@app.get("/admin/debug-iamc", dependencies=[Depends(require_auth)])
 async def debug_iamc_html():
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as client:
@@ -2503,7 +2546,7 @@ async def debug_iamc_html():
     except Exception as e:
         return {"error": str(e)}
 
-@app.get("/admin/test-iamc-url")
+@app.get("/admin/test-iamc-url", dependencies=[Depends(require_auth)])
 async def test_iamc_url(fecha_str: str = Query(None)):
     """Testea si la URL del PDF de IAMC es accesible (últimos 5 días hábiles)."""
     if fecha_str:
@@ -2682,7 +2725,7 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
 
     # IV ATM para chance estimate
     atm_rows = [r for r in rows_suby if r.get("moneyness") == "ATM" and r.get("vol_implicita")]
-    sigma_atm = atm_rows[0]["vol_implicita"] if atm_rows else 60.0
+    sigma_atm = min(atm_rows, key=lambda r: abs((r.get("strike") or 0) - spot))["vol_implicita"] if atm_rows else 60.0
 
     # Rango de precios para payoff
     s_std = spot * (sigma_atm / 100) * math.sqrt(T)
@@ -2877,7 +2920,7 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
     return strategies[:6]
 
 
-@app.get("/api/estrategias")
+@app.get("/api/estrategias", dependencies=[Depends(require_auth)])
 async def get_estrategias(
     subyacente: str = Query(...),
     vencimiento: str = Query(None),    # "2026-10-16" o "2026-12-18"; None = ambos
