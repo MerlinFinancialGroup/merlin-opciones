@@ -182,6 +182,7 @@ td.muted{color:#706858}
         <div class="tab-btns">
           <button class="tab-btn active" data-view="cadena">Cadena</button>
           <button class="tab-btn" data-view="smile">IV Smile</button>
+          <button class="tab-btn" data-view="estrategias">Estrategias</button>
           <button class="tab-btn" data-view="resumen">Resumen</button>
         </div>
       </div>
@@ -559,6 +560,7 @@ function switchView(view, btn) {
 function renderView() {
   if (state.view === 'cadena') renderCadena();
   else if (state.view === 'smile') renderSmile();
+  else if (state.view === 'estrategias') renderEstrategias();
   else renderResumen();
 }
 
@@ -1068,6 +1070,55 @@ function redrawSmileCanvas(canvas, ctx, dpr, W, H, pad, cW, cH,
   }
 }
 
+
+function renderEstrategias() {
+  const content = document.getElementById('content');
+  const suby = state.currentSuby || 'GGAL';
+  const vtos = [...new Set(state.cadena.map(r => r.vencimiento).filter(Boolean))].sort();
+  const vto = vtos[0] || '';
+  content.innerHTML = `
+    <div style="padding:16px 20px;height:100%;overflow:auto">
+      <div style="font-size:11px;font-family:'JetBrains Mono',monospace;color:#706858;margin-bottom:16px;text-transform:uppercase;letter-spacing:1px">Estrategias — ${esc(suby)}</div>
+      <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+        <select id="est-vto" style="background:#12100a;border:0.5px solid #2a2510;color:#c8c0b0;padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;border-radius:4px">
+          ${vtos.map(v=>`<option value="${v}" ${v===vto?'selected':''}>${v}</option>`).join('')}
+        </select>
+        <select id="est-sesgo" style="background:#12100a;border:0.5px solid #2a2510;color:#c8c0b0;padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;border-radius:4px">
+          <option value="bullish">Alcista</option>
+          <option value="bearish">Bajista</option>
+          <option value="neutral">Neutral</option>
+        </select>
+        <button onclick="buscarEstrategias()" style="padding:6px 14px;background:rgba(201,150,10,0.15);border:0.5px solid #C9960A;color:#C9960A;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;border-radius:4px">Buscar</button>
+      </div>
+      <div id="est-resultado" style="color:#706858;font-family:'JetBrains Mono',monospace;font-size:11px">Seleccioná vencimiento y sesgo para ver estrategias.</div>
+    </div>`;
+}
+
+async function buscarEstrategias() {
+  const suby = state.currentSuby || 'GGAL';
+  const vto  = document.getElementById('est-vto')?.value;
+  const sesgo = document.getElementById('est-sesgo')?.value;
+  const el = document.getElementById('est-resultado');
+  if(!el) return;
+  el.innerHTML = '<span style="color:#706858">Cargando...</span>';
+  try {
+    const d = await fjson(`${API}/api/estrategias?subyacente=${encodeURIComponent(suby)}&vencimiento=${encodeURIComponent(vto)}&sesgo=${sesgo}&budget=100`);
+    if(!d || !d.estrategias?.length){ el.innerHTML = '<span style="color:#706858">Sin estrategias disponibles.</span>'; return; }
+    el.innerHTML = d.estrategias.map(e => `
+      <div style="background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:12px;margin-bottom:10px">
+        <div style="font-weight:600;color:#C9960A;margin-bottom:6px">${esc(e.nombre)}</div>
+        <div style="color:#c8c0b0;margin-bottom:4px">${esc(e.descripcion||'')}</div>
+        <div style="display:flex;gap:16px;font-size:10px;color:#706858">
+          ${e.max_ganancia!=null?`<span>Ganancia máx: <span style="color:#3ab07a">${e.max_ganancia}</span></span>`:''}
+          ${e.max_perdida!=null?`<span>Pérdida máx: <span style="color:#c0392b">${e.max_perdida}</span></span>`:''}
+          ${e.breakeven!=null?`<span>Breakeven: <span style="color:#C9960A">${e.breakeven}</span></span>`:''}
+        </div>
+        ${e.patas?`<div style="margin-top:8px;font-size:10px;color:#a09880">${e.patas.map(p=>`<div>${esc(p)}</div>`).join('')}</div>`:''}
+      </div>`).join('');
+  } catch(err) {
+    el.innerHTML = `<span style="color:#c0392b">Error: ${err.message}</span>`;
+  }
+}
 
 function renderCadena() {
   const rows = getFilteredRows();
