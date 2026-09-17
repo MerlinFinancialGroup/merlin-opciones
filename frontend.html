@@ -133,7 +133,7 @@ td.muted{color:#706858}
 .vto-btn.active{background:rgba(201,150,10,.12);border-color:#C9960A;color:#C9960A}
 .budget-input{background:#0e0d0a;border:0.5px solid #2a2510;color:#e8e0cc;padding:4px 8px;border-radius:4px;font-size:11px;font-family:'JetBrains Mono',monospace;outline:none;width:100px}
 .budget-input:focus{border-color:#C9960A}
-.est-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+.est-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
 .est-card{background:#12100a;border:0.5px solid #2a2510;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px;transition:border-color .15s}
 .est-card:hover{border-color:#C9960A44}
 .est-card-header{display:flex;justify-content:space-between;align-items:flex-start}
@@ -1349,6 +1349,7 @@ async function loadEstrategias() {
 
 function _scoreStrats(strats) {
   // rcWeight: 0=solo retorno, 100=solo chance
+  // Siempre devuelve las 4 mejores según el criterio del dial
   const w = EST_STATE.rcWeight / 100;
   return [...strats].sort((a, b) => {
     const retA = a.max_profit && a.max_risk ? Math.abs(a.max_profit / a.max_risk) : 0;
@@ -1358,7 +1359,7 @@ function _scoreStrats(strats) {
     const scoreA = (1 - w) * retA * 10 + w * chA;
     const scoreB = (1 - w) * retB * 10 + w * chB;
     return scoreB - scoreA;
-  });
+  }).slice(0, 4);
 }
 
 function renderEstrategias() {

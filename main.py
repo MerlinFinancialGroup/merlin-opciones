@@ -2962,7 +2962,7 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
 
     # Ordenar por score descendente, top 5
     strategies.sort(key=lambda x: -x["score"])
-    return strategies[:6]
+    return strategies[:4]
 
 
 @app.get("/api/estrategias", dependencies=[Depends(require_auth)])
