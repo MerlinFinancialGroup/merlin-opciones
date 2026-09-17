@@ -2529,3 +2529,350 @@ async def test_iamc_url(fecha_str: str = Query(None)):
         except Exception as e:
             results.append({"fecha": test_date.isoformat(), "url": url, "error": str(e)})
     return {"results": results}
+
+# ── ESTRATEGIAS ────────────────────────────────────────────────────────────────
+
+def _payoff_array(legs: list, s_range: list) -> list:
+    """
+    legs: [{"tipo": "CALL"|"PUT", "strike": K, "side": "long"|"short", "prima": p, "qty": 1}]
+    Devuelve lista de {s, pnl} para cada precio S en s_range.
+    """
+    import math
+    result = []
+    for S in s_range:
+        pnl = 0.0
+        for leg in legs:
+            K     = leg["strike"]
+            side  = leg["side"]   # "long" o "short"
+            prima = leg["prima"]  # costo de la prima (positivo)
+            qty   = leg.get("qty", 1)
+            if leg["tipo"] == "CALL":
+                intrinsic = max(0.0, S - K)
+            else:
+                intrinsic = max(0.0, K - S)
+            if side == "long":
+                pnl += (intrinsic - prima) * qty
+            else:
+                pnl += (prima - intrinsic) * qty
+        result.append({"s": round(S, 2), "pnl": round(pnl, 4)})
+    return result
+
+def _chance_estimate(legs: list, spot: float, sigma: float, T: float) -> float | None:
+    """
+    Estima la probabilidad de que la estrategia expire con ganancia,
+    usando distribución log-normal del subyacente.
+    """
+    import math
+    if not spot or not sigma or not T or sigma <= 0 or T <= 0:
+        return None
+
+    # Identificar la zona de profit de la estrategia
+    # Usamos 200 puntos en ±3sigma del spot
+    s_log_std = sigma / 100 * math.sqrt(T)
+    lo = spot * math.exp(-3.5 * s_log_std)
+    hi = spot * math.exp(+3.5 * s_log_std)
+    n_pts = 200
+    step = (hi - lo) / n_pts
+
+    mu = math.log(spot) + (0 - 0.5 * (sigma/100)**2) * T  # drift neutro al riesgo
+    total_prob = 0.0
+    profit_prob = 0.0
+
+    for i in range(n_pts):
+        S = lo + (i + 0.5) * step
+        # Densidad log-normal
+        z = (math.log(S) - mu) / (s_log_std + 1e-10)
+        density = math.exp(-0.5 * z * z) / (S * s_log_std * math.sqrt(2 * math.pi) + 1e-10) * step
+        # PnL en este punto
+        pnl = 0.0
+        for leg in legs:
+            K     = leg["strike"]
+            prima = leg["prima"]
+            qty   = leg.get("qty", 1)
+            if leg["tipo"] == "CALL":
+                intr = max(0.0, S - K)
+            else:
+                intr = max(0.0, K - S)
+            pnl += (intr - prima) * qty if leg["side"] == "long" else (prima - intr) * qty
+        total_prob += density
+        if pnl > 0:
+            profit_prob += density
+
+    if total_prob <= 0:
+        return None
+    return round(profit_prob / total_prob * 100, 1)
+
+def _get_best_option(opciones: list, tipo: str, strike_target: float, vto: str,
+                     prefer: str = "mid") -> dict | None:
+    """
+    Busca la opción más cercana al strike_target con bid/ask/precio disponible.
+    prefer: "mid" usa mid de bid/ask, "ultimo" usa último operado
+    """
+    candidates = [
+        r for r in opciones
+        if r.get("tipo") == tipo
+        and r.get("vencimiento") == vto
+        and r.get("strike") is not None
+    ]
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda r: abs((r.get("strike") or 0) - strike_target))
+
+    for r in candidates[:5]:
+        bid   = r.get("bid") or r.get("vi_bid")
+        ask   = r.get("ask") or r.get("vi_offer")
+        ult   = r.get("ultimo_precio") or r.get("veta_ultimo")
+        teorico = r.get("precio_teorico")
+
+        # Precio de la prima
+        if bid and ask:
+            prima = (bid + ask) / 2
+        elif ult:
+            prima = ult
+        elif teorico:
+            prima = teorico
+        else:
+            continue
+
+        if prima <= 0:
+            continue
+
+        return {
+            "symbol":  r.get("symbol"),
+            "tipo":    tipo,
+            "strike":  r.get("strike"),
+            "vto":     vto,
+            "prima":   round(prima, 4),
+            "bid":     bid,
+            "ask":     ask,
+            "ultimo":  ult,
+            "vi":      r.get("vol_implicita") or r.get("vi_ultimo"),
+            "delta":   r.get("delta"),
+            "dias_vto": r.get("dias_vto"),
+        }
+    return None
+
+def _build_estrategias(opciones: list, subyacente: str, vto: str,
+                        sesgo: str, budget: float | None) -> list:
+    """
+    Construye las estrategias disponibles para el subyacente/vencimiento/sesgo dados.
+    sesgo: "very_bearish" | "bearish" | "neutral" | "bullish" | "very_bullish"
+    Devuelve lista de estrategias ordenadas por score.
+    """
+    import math
+
+    rows_suby = [
+        r for r in opciones
+        if (r.get("subyacente") or "").upper() == subyacente.upper()
+        and r.get("vencimiento") == vto
+    ]
+    if not rows_suby:
+        return []
+
+    # Spot y parámetros base
+    spot = next((r["precio_suby"] for r in rows_suby if r.get("precio_suby")), None)
+    if not spot:
+        return []
+
+    dias = next((r["dias_vto"] for r in rows_suby if r.get("dias_vto")), None)
+    T    = dias / 365.0 if dias else 30 / 365.0
+
+    # IV ATM para chance estimate
+    atm_rows = [r for r in rows_suby if r.get("moneyness") == "ATM" and r.get("vol_implicita")]
+    sigma_atm = atm_rows[0]["vol_implicita"] if atm_rows else 60.0
+
+    # Rango de precios para payoff
+    s_std = spot * (sigma_atm / 100) * math.sqrt(T)
+    s_lo  = max(1, spot - 3 * s_std)
+    s_hi  = spot + 3 * s_std
+    s_range = [s_lo + (s_hi - s_lo) * i / 99 for i in range(100)]
+
+    strategies = []
+
+    # ── Helper para agregar estrategia ──
+    def add_strategy(name: str, legs_def: list, categoria: str, sesgos_ok: list):
+        if sesgo not in sesgos_ok:
+            return
+
+        # Resolver patas
+        legs = []
+        for ld in legs_def:
+            opt = _get_best_option(rows_suby, ld["tipo"], ld["strike_target"], vto)
+            if not opt:
+                return
+            legs.append({
+                "tipo":   ld["tipo"],
+                "strike": opt["strike"],
+                "side":   ld["side"],
+                "prima":  opt["prima"],
+                "qty":    ld.get("qty", 1),
+                "symbol": opt["symbol"],
+                "bid":    opt["bid"],
+                "ask":    opt["ask"],
+            })
+
+        # Costo neto de la estrategia
+        costo_neto = sum(
+            l["prima"] * l["qty"] if l["side"] == "long" else -l["prima"] * l["qty"]
+            for l in legs
+        )
+
+        # Max profit / max risk / break-evens
+        payoff = _payoff_array(legs, s_range)
+        pnl_vals = [p["pnl"] for p in payoff]
+        max_profit = max(pnl_vals)
+        max_risk   = min(pnl_vals)  # es negativo
+
+        # Filtro de budget
+        if budget and abs(costo_neto) > budget and costo_neto > 0:
+            return
+
+        # Break-evens (cruces por cero)
+        be_list = []
+        for i in range(len(payoff) - 1):
+            p1, p2 = pnl_vals[i], pnl_vals[i+1]
+            if p1 * p2 < 0:
+                # Interpolación lineal
+                s1, s2 = payoff[i]["s"], payoff[i+1]["s"]
+                be = s1 + (s2 - s1) * (-p1) / (p2 - p1)
+                be_list.append(round(be, 2))
+
+        # Chance
+        chance = _chance_estimate(legs, spot, sigma_atm, T)
+
+        # Score: ponderación de retorno/riesgo y chance
+        ret_risk = abs(max_profit / max_risk) if max_risk < 0 else 999
+        score = (chance or 0) * 0.5 + min(ret_risk, 10) * 10
+
+        patas_desc = []
+        for l in legs:
+            side_txt = "Compra" if l["side"] == "long" else "Venta"
+            patas_desc.append(f"{side_txt} {l['tipo']} {subyacente} ${l['strike']:,.0f} @ ${l['prima']:,.2f}")
+
+        strategies.append({
+            "nombre":       name,
+            "categoria":    categoria,
+            "sesgo":        sesgo,
+            "subyacente":   subyacente,
+            "vencimiento":  vto,
+            "dias_vto":     dias,
+            "spot":         spot,
+            "costo_neto":   round(costo_neto, 4),
+            "max_profit":   round(max_profit, 4) if max_profit < 1e8 else None,
+            "max_risk":     round(max_risk,   4) if max_risk > -1e8  else None,
+            "break_evens":  be_list,
+            "chance":       chance,
+            "score":        round(score, 2),
+            "patas":        patas_desc,
+            "legs":         legs,
+            "payoff":       payoff,
+        })
+
+    # ── Strikes de referencia ──
+    atm   = spot
+    otm1c = spot * 1.05   # 5% OTM call
+    otm2c = spot * 1.10   # 10% OTM call
+    otm1p = spot * 0.95   # 5% OTM put
+    otm2p = spot * 0.90   # 10% OTM put
+    itm1c = spot * 0.95   # 5% ITM call
+    itm1p = spot * 1.05   # 5% ITM put
+
+    # ── Estrategias direccionales ──
+
+    # Long Call
+    add_strategy("Long Call", [
+        {"tipo": "CALL", "strike_target": otm1c, "side": "long"}
+    ], "direccional", ["bullish", "very_bullish"])
+
+    # Long Put
+    add_strategy("Long Put", [
+        {"tipo": "PUT", "strike_target": otm1p, "side": "long"}
+    ], "direccional", ["bearish", "very_bearish"])
+
+    # Bull Call Spread
+    add_strategy("Bull Call Spread", [
+        {"tipo": "CALL", "strike_target": atm,   "side": "long"},
+        {"tipo": "CALL", "strike_target": otm1c, "side": "short"},
+    ], "spread", ["bullish", "very_bullish"])
+
+    # Bear Put Spread
+    add_strategy("Bear Put Spread", [
+        {"tipo": "PUT", "strike_target": atm,   "side": "long"},
+        {"tipo": "PUT", "strike_target": otm1p, "side": "short"},
+    ], "spread", ["bearish", "very_bearish"])
+
+    # Bear Call Spread
+    add_strategy("Bear Call Spread", [
+        {"tipo": "CALL", "strike_target": otm1c, "side": "short"},
+        {"tipo": "CALL", "strike_target": otm2c, "side": "long"},
+    ], "spread", ["bearish", "neutral", "very_bearish"])
+
+    # Bull Put Spread
+    add_strategy("Bull Put Spread", [
+        {"tipo": "PUT", "strike_target": otm1p, "side": "short"},
+        {"tipo": "PUT", "strike_target": otm2p, "side": "long"},
+    ], "spread", ["bullish", "neutral", "very_bullish"])
+
+    # Straddle
+    add_strategy("Straddle", [
+        {"tipo": "CALL", "strike_target": atm, "side": "long"},
+        {"tipo": "PUT",  "strike_target": atm, "side": "long"},
+    ], "neutral_volatilidad", ["neutral"])
+
+    # Strangle
+    add_strategy("Strangle", [
+        {"tipo": "CALL", "strike_target": otm1c, "side": "long"},
+        {"tipo": "PUT",  "strike_target": otm1p, "side": "long"},
+    ], "neutral_volatilidad", ["neutral"])
+
+    # Covered Call (venta de call OTM)
+    add_strategy("Venta Call OTM", [
+        {"tipo": "CALL", "strike_target": otm1c, "side": "short"},
+    ], "generacion_ingreso", ["neutral", "bullish"])
+
+    # Venta Put OTM (cash-secured put)
+    add_strategy("Venta Put OTM", [
+        {"tipo": "PUT", "strike_target": otm1p, "side": "short"},
+    ], "generacion_ingreso", ["neutral", "bullish", "very_bullish"])
+
+    # Ordenar por score descendente, top 5
+    strategies.sort(key=lambda x: -x["score"])
+    return strategies[:6]
+
+
+@app.get("/api/estrategias")
+async def get_estrategias(
+    subyacente: str = Query(...),
+    vencimiento: str = Query(None),    # "2026-10-16" o "2026-12-18"; None = ambos
+    sesgo: str = Query("neutral"),
+    budget: float = Query(None),
+):
+    """
+    Devuelve estrategias sugeridas para el subyacente/sesgo/budget dados.
+    sesgo: very_bearish | bearish | neutral | bullish | very_bullish
+    """
+    opciones = state.get("opciones", [])
+    if not opciones:
+        return JSONResponse(status_code=503, content={"error": "Sin datos de opciones cargados"})
+
+    SESGOS_VALIDOS = ["very_bearish", "bearish", "neutral", "bullish", "very_bullish"]
+    if sesgo not in SESGOS_VALIDOS:
+        sesgo = "neutral"
+
+    VTOS = ["2026-10-16", "2026-12-18"]
+    vtos_target = [vencimiento] if vencimiento and vencimiento in VTOS else VTOS
+
+    result = {}
+    for vto in vtos_target:
+        strats = _build_estrategias(opciones, subyacente, vto, sesgo, budget)
+        if strats:
+            result[vto] = strats
+
+    return {
+        "fecha":       state["fecha"],
+        "subyacente":  subyacente,
+        "sesgo":       sesgo,
+        "budget":      budget,
+        "estrategias": result,
+    }

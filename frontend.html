@@ -114,6 +114,46 @@ td.muted{color:#706858}
 .pos{color:#3ab07a}
 .neg{color:#c0392b}
 .gold{color:#C9960A;font-weight:600}
+
+/* ── ESTRATEGIAS ── */
+.est-layout{padding:16px 20px;overflow:auto;height:100%;display:flex;flex-direction:column;gap:14px}
+.est-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#12100a;border:0.5px solid #2a2510;border-radius:6px;padding:10px 14px}
+.est-toolbar .ctrl-lbl{white-space:nowrap}
+.sesgo-btns{display:flex;gap:4px}
+.sesgo-btn{padding:5px 12px;border:0.5px solid #2a2510;background:none;color:#a09880;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;border-radius:4px;transition:all .15s;white-space:nowrap}
+.sesgo-btn:hover{border-color:#C9960A;color:#e8e0cc}
+.sesgo-btn.active{font-weight:700}
+.sesgo-btn[data-sesgo="very_bearish"].active{background:rgba(192,57,43,.2);border-color:#c0392b;color:#e74c3c}
+.sesgo-btn[data-sesgo="bearish"].active{background:rgba(192,57,43,.1);border-color:#c0392b88;color:#e07060}
+.sesgo-btn[data-sesgo="neutral"].active{background:rgba(201,150,10,.12);border-color:#C9960A;color:#C9960A}
+.sesgo-btn[data-sesgo="bullish"].active{background:rgba(58,176,122,.1);border-color:#3ab07a88;color:#60c090}
+.sesgo-btn[data-sesgo="very_bullish"].active{background:rgba(58,176,122,.2);border-color:#3ab07a;color:#3ab07a}
+.vto-toggle{display:flex;gap:4px}
+.vto-btn{padding:5px 12px;border:0.5px solid #2a2510;background:none;color:#a09880;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;border-radius:4px;transition:all .15s}
+.vto-btn.active{background:rgba(201,150,10,.12);border-color:#C9960A;color:#C9960A}
+.budget-input{background:#0e0d0a;border:0.5px solid #2a2510;color:#e8e0cc;padding:4px 8px;border-radius:4px;font-size:11px;font-family:'JetBrains Mono',monospace;outline:none;width:100px}
+.budget-input:focus{border-color:#C9960A}
+.est-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+.est-card{background:#12100a;border:0.5px solid #2a2510;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px;transition:border-color .15s}
+.est-card:hover{border-color:#C9960A44}
+.est-card-header{display:flex;justify-content:space-between;align-items:flex-start}
+.est-name{font-size:14px;font-weight:700;color:#e8e0cc}
+.est-cat{font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.8px;color:#706858;margin-top:2px}
+.est-chance{text-align:right}
+.est-chance .val{font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.est-chance .lbl{font-size:9px;color:#706858;font-family:'JetBrains Mono',monospace;text-transform:uppercase}
+.est-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.est-metric{background:#0e0d0a;border:0.5px solid #1a1710;border-radius:4px;padding:7px 8px}
+.est-metric .m-lbl{font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.6px;color:#706858;margin-bottom:2px}
+.est-metric .m-val{font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace}
+.est-legs{display:flex;flex-direction:column;gap:3px}
+.est-leg{font-size:10px;font-family:'JetBrains Mono',monospace;color:#a09880;padding:3px 6px;background:#0e0d0a;border-radius:3px;border-left:2px solid}
+.est-leg.long{border-color:#3ab07a;color:#90d0b0}
+.est-leg.short{border-color:#c0392b;color:#d09090}
+.est-payoff-canvas{width:100%;height:120px;display:block;border-radius:4px}
+.est-be{font-size:10px;font-family:'JetBrains Mono',monospace;color:#706858;text-align:center}
+.est-section-title{font-size:11px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;padding:6px 0 2px;border-bottom:0.5px solid #2a2510}
+.est-loading{display:flex;align-items:center;justify-content:center;height:200px;color:#706858;font-family:'JetBrains Mono',monospace;font-size:11px}
 </style>
 </head>
 <body>
@@ -182,6 +222,7 @@ td.muted{color:#706858}
         <div class="tab-btns">
           <button class="tab-btn active" data-view="cadena">Cadena</button>
           <button class="tab-btn" data-view="smile">IV Smile</button>
+          <button class="tab-btn" data-view="estrategias">Estrategias</button>
           <button class="tab-btn" data-view="resumen">Resumen</button>
         </div>
       </div>
@@ -558,6 +599,7 @@ function switchView(view, btn) {
 function renderView() {
   if (state.view === 'cadena') renderCadena();
   else if (state.view === 'smile') renderSmile();
+  else if (state.view === 'estrategias') renderEstrategias();
   else renderResumen();
 }
 
@@ -1192,6 +1234,322 @@ function renderResumen() {
 
   html += '</div>';
   document.getElementById('content').innerHTML = html;
+}
+
+// ── ESTRATEGIAS ────────────────────────────────────────────────────────────────
+
+const EST_STATE = {
+  sesgo:       'neutral',
+  vto:         '',          // '' = ambos
+  budget:      null,
+  loading:     false,
+  data:        null,        // último response del backend
+};
+
+const SESGO_LABEL = {
+  very_bearish:  '↓↓ Muy Bajista',
+  bearish:       '↓ Bajista',
+  neutral:       '→ Neutral',
+  bullish:       '↑ Alcista',
+  very_bullish:  '↑↑ Muy Alcista',
+};
+
+const CAT_LABEL = {
+  direccional:       'Direccional',
+  spread:            'Spread',
+  neutral_volatilidad: 'Neutral/Volatilidad',
+  generacion_ingreso: 'Ingreso',
+};
+
+async function loadEstrategias() {
+  if (!state.currentSuby) return;
+  EST_STATE.loading = true;
+  const el = document.getElementById('content');
+  el.innerHTML = `<div class="est-loading">Calculando estrategias...</div>`;
+
+  const params = new URLSearchParams({ subyacente: state.currentSuby, sesgo: EST_STATE.sesgo });
+  if (EST_STATE.vto)    params.set('vencimiento', EST_STATE.vto);
+  if (EST_STATE.budget) params.set('budget', EST_STATE.budget);
+
+  try {
+    const d = await fjson(`${API}/api/estrategias?${params}`);
+    EST_STATE.data    = d;
+    EST_STATE.loading = false;
+    renderEstrategias();
+  } catch(e) {
+    EST_STATE.loading = false;
+    el.innerHTML = `<div class="est-loading">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderEstrategias() {
+  if (state.view !== 'estrategias') return;
+
+  const el = document.getElementById('content');
+
+  // Toolbar
+  const vtoOpts = [
+    { v: '',            l: 'Oct + Dic' },
+    { v: '2026-10-16',  l: 'Octubre'   },
+    { v: '2026-12-18',  l: 'Diciembre' },
+  ];
+  const sesgos = ['very_bearish','bearish','neutral','bullish','very_bullish'];
+
+  el.innerHTML = `
+  <div class="est-layout">
+    <div class="est-toolbar">
+      <span class="ctrl-lbl">Sesgo</span>
+      <div class="sesgo-btns" id="sesgo-btns">
+        ${sesgos.map(s =>
+          `<button class="sesgo-btn${EST_STATE.sesgo===s?' active':''}" data-sesgo="${s}">${SESGO_LABEL[s]}</button>`
+        ).join('')}
+      </div>
+      <span class="ctrl-lbl" style="margin-left:8px">Vencimiento</span>
+      <div class="vto-toggle" id="vto-toggle">
+        ${vtoOpts.map(o =>
+          `<button class="vto-btn${EST_STATE.vto===o.v?' active':''}" data-vto="${o.v}">${o.l}</button>`
+        ).join('')}
+      </div>
+      <span class="ctrl-lbl" style="margin-left:8px">Budget $</span>
+      <input class="budget-input" id="budget-input" type="number" min="0" step="1000"
+        placeholder="sin límite" value="${EST_STATE.budget||''}">
+      <button class="csv-btn" id="btn-calc-est">▶ Calcular</button>
+    </div>
+    <div id="est-results">
+      ${EST_STATE.loading
+        ? '<div class="est-loading">Calculando...</div>'
+        : EST_STATE.data ? _renderEstResults(EST_STATE.data) : '<div class="est-loading">Presioná Calcular para ver estrategias</div>'}
+    </div>
+  </div>`;
+
+  // Eventos toolbar
+  document.getElementById('sesgo-btns').addEventListener('click', e => {
+    const btn = e.target.closest('.sesgo-btn');
+    if (!btn) return;
+    EST_STATE.sesgo = btn.dataset.sesgo;
+    document.querySelectorAll('.sesgo-btn').forEach(b => b.classList.toggle('active', b===btn));
+  });
+
+  document.getElementById('vto-toggle').addEventListener('click', e => {
+    const btn = e.target.closest('.vto-btn');
+    if (!btn) return;
+    EST_STATE.vto = btn.dataset.vto;
+    document.querySelectorAll('.vto-btn').forEach(b => b.classList.toggle('active', b===btn));
+  });
+
+  document.getElementById('budget-input').addEventListener('change', e => {
+    const v = parseFloat(e.target.value);
+    EST_STATE.budget = isNaN(v) ? null : v;
+  });
+
+  document.getElementById('btn-calc-est').addEventListener('click', () => {
+    const v = parseFloat(document.getElementById('budget-input').value);
+    EST_STATE.budget = isNaN(v) ? null : v;
+    loadEstrategias();
+  });
+
+  // Dibujar payoffs
+  if (EST_STATE.data) {
+    requestAnimationFrame(() => _drawAllPayoffs(EST_STATE.data));
+  }
+}
+
+function _renderEstResults(data) {
+  const estrategias = data.estrategias || {};
+  const vtos = Object.keys(estrategias).sort();
+  if (!vtos.length) return '<div class="est-loading">No hay estrategias disponibles para los parámetros seleccionados</div>';
+
+  let html = '';
+  for (const vto of vtos) {
+    const strats = estrategias[vto];
+    if (!strats?.length) continue;
+    const label = vto === '2026-10-16' ? 'Octubre — 16/10/2026' : 'Diciembre — 18/12/2026';
+    html += `<div class="est-section-title">${label} · ${strats[0]?.dias_vto || '?'} días</div>`;
+    html += `<div class="est-grid">`;
+    for (let i = 0; i < strats.length; i++) {
+      const s = strats[i];
+      html += _renderEstCard(s, vto, i);
+    }
+    html += `</div>`;
+  }
+  return html;
+}
+
+function _renderEstCard(s, vto, idx) {
+  const canvasId = `payoff-${vto.replace(/-/g,'')}-${idx}`;
+  const chanceVal = s.chance != null ? s.chance.toFixed(1) + '%' : '—';
+  const chanceColor = s.chance == null ? '#706858'
+    : s.chance >= 60 ? '#3ab07a'
+    : s.chance >= 40 ? '#C9960A'
+    : '#c0392b';
+
+  const maxProfitTxt = s.max_profit == null ? 'Ilimitado'
+    : s.max_profit > 1e7 ? 'Ilimitado'
+    : '$' + fmt(s.max_profit);
+  const maxRiskTxt = s.max_risk == null ? 'Ilimitado'
+    : s.max_risk < -1e7 ? 'Ilimitado'
+    : '$' + fmt(Math.abs(s.max_risk));
+  const costoTxt = s.costo_neto >= 0
+    ? `Débito $${fmt(s.costo_neto)}`
+    : `Crédito $${fmt(Math.abs(s.costo_neto))}`;
+  const costoColor = s.costo_neto >= 0 ? '#c0392b' : '#3ab07a';
+
+  const retRisk = (s.max_risk && s.max_risk < 0 && s.max_profit > 0)
+    ? ((s.max_profit / Math.abs(s.max_risk)) * 100).toFixed(0) + '%'
+    : '—';
+
+  const beList = s.break_evens?.length
+    ? s.break_evens.map(b => '$' + fmt(b)).join(' / ')
+    : '—';
+
+  const legsHtml = (s.legs || []).map(l =>
+    `<div class="est-leg ${l.side}">${l.side === 'long' ? '▲' : '▼'} ${l.tipo} $${fmt(l.strike)} · Prima $${fmt(l.prima)}${l.bid&&l.ask ? ` <span style="color:#706858">(bid $${fmt(l.bid)} / ask $${fmt(l.ask)})</span>` : ''}</div>`
+  ).join('');
+
+  return `
+  <div class="est-card">
+    <div class="est-card-header">
+      <div>
+        <div class="est-name">${esc(s.nombre)}</div>
+        <div class="est-cat">${CAT_LABEL[s.categoria] || s.categoria}</div>
+      </div>
+      <div class="est-chance">
+        <div class="val" style="color:${chanceColor}">${chanceVal}</div>
+        <div class="lbl">Chance</div>
+      </div>
+    </div>
+    <div class="est-metrics">
+      <div class="est-metric">
+        <div class="m-lbl">Ganancia máx</div>
+        <div class="m-val pos">${maxProfitTxt}</div>
+      </div>
+      <div class="est-metric">
+        <div class="m-lbl">Riesgo máx</div>
+        <div class="m-val neg">${maxRiskTxt}</div>
+      </div>
+      <div class="est-metric">
+        <div class="m-lbl">Ret/Riesgo</div>
+        <div class="m-val gold">${retRisk}</div>
+      </div>
+      <div class="est-metric" style="grid-column:1/-1">
+        <div class="m-lbl">Costo neto</div>
+        <div class="m-val" style="color:${costoColor}">${costoTxt}</div>
+      </div>
+    </div>
+    <canvas class="est-payoff-canvas" id="${canvasId}" height="120"></canvas>
+    <div class="est-be">Break-even: ${beList}</div>
+    <div class="est-legs">${legsHtml}</div>
+  </div>`;
+}
+
+function _drawAllPayoffs(data) {
+  const estrategias = data.estrategias || {};
+  for (const [vto, strats] of Object.entries(estrategias)) {
+    strats.forEach((s, idx) => {
+      const canvasId = `payoff-${vto.replace(/-/g,'')}-${idx}`;
+      const canvas = document.getElementById(canvasId);
+      if (!canvas || !s.payoff?.length) return;
+      _drawPayoff(canvas, s);
+    });
+  }
+}
+
+function _drawPayoff(canvas, s) {
+  const dpr = window.devicePixelRatio || 1;
+  const W   = canvas.offsetWidth || 320;
+  const H   = 120;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const pad = { l: 44, r: 8, t: 8, b: 22 };
+  const cW  = W - pad.l - pad.r;
+  const cH  = H - pad.t - pad.b;
+
+  const pts    = s.payoff;
+  const sVals  = pts.map(p => p.s);
+  const pVals  = pts.map(p => p.pnl);
+  const sMin = Math.min(...sVals), sMax = Math.max(...sVals);
+  const pMin = Math.min(...pVals), pMax = Math.max(...pVals);
+  const pRange = Math.max(Math.abs(pMin), Math.abs(pMax)) || 1;
+
+  const xs = v => pad.l + (sMax === sMin ? cW/2 : (v - sMin) / (sMax - sMin) * cW);
+  const ys = v => pad.t + cH - ((v + pRange) / (2 * pRange) * cH);
+  const y0 = ys(0);
+
+  // Fondo
+  ctx.fillStyle = '#0e0d0a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Eje cero
+  ctx.strokeStyle = '#2a2510';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath(); ctx.moveTo(pad.l, y0); ctx.lineTo(W - pad.r, y0); ctx.stroke();
+
+  // Spot
+  if (s.spot) {
+    const xSpot = xs(s.spot);
+    ctx.strokeStyle = 'rgba(201,150,10,0.4)';
+    ctx.lineWidth = 0.8;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(xSpot, pad.t); ctx.lineTo(xSpot, H - pad.b); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Break-evens
+  (s.break_evens || []).forEach(be => {
+    const xBe = xs(be);
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 0.6;
+    ctx.setLineDash([2, 4]);
+    ctx.beginPath(); ctx.moveTo(xBe, pad.t); ctx.lineTo(xBe, H - pad.b); ctx.stroke();
+    ctx.setLineDash([]);
+  });
+
+  // Fill profit/loss
+  ctx.beginPath();
+  ctx.moveTo(xs(pts[0].s), y0);
+  pts.forEach(p => ctx.lineTo(xs(p.s), ys(p.pnl)));
+  ctx.lineTo(xs(pts[pts.length - 1].s), y0);
+  ctx.closePath();
+  // Gradient
+  const grad = ctx.createLinearGradient(0, pad.t, 0, H - pad.b);
+  grad.addColorStop(0, 'rgba(58,176,122,0.25)');
+  grad.addColorStop(0.5, 'rgba(58,176,122,0.05)');
+  grad.addColorStop(1, 'rgba(192,57,43,0.20)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Línea payoff
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const x = xs(p.s), y = ys(p.pnl);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#C9960A';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Labels eje Y
+  ctx.fillStyle = '#706858';
+  ctx.font = `${8 * (dpr > 1 ? 1 : 1)}px monospace`;
+  ctx.textAlign = 'right';
+  [pRange, 0, -pRange].forEach(v => {
+    const y = ys(v);
+    const txt = v === 0 ? '0' : (v > 0 ? '+' : '') + fmtM(v);
+    ctx.fillText(txt, pad.l - 3, y + 3);
+  });
+
+  // Labels eje X (3 puntos)
+  ctx.textAlign = 'center';
+  [sMin, s.spot || (sMin + sMax)/2, sMax].forEach(v => {
+    const x = xs(v);
+    const lbl = v >= 1000 ? (v/1000).toFixed(1)+'k' : v.toFixed(0);
+    ctx.fillText('$'+lbl, x, H - pad.b + 12);
+  });
 }
 
 // ── EXPORT CSV ─────────────────────────────────────────────────────────────────
