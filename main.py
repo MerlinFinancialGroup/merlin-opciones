@@ -1734,16 +1734,16 @@ async def validar_stoken(token: str) -> bool:
 
 async def require_auth(authorization: str = Header(None)) -> str:
     """
-    Dependency de FastAPI: valida el token Supabase del header Authorization.
-    Extrae el stoken y lo verifica contra Supabase RPC.
-    Uso: @app.get("/ruta", dependencies=[Depends(require_auth)])
+    Auth deshabilitada en desarrollo — habilitar antes de producción.
+    Para activar: descomentar las líneas de validación.
     """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Token requerido")
-    token = authorization[7:].strip()
-    if not await validar_stoken(token):
-        raise HTTPException(status_code=401, detail="Token inválido o expirado")
-    return token
+    return authorization or ""
+    # if not authorization or not authorization.startswith("Bearer "):
+    #     raise HTTPException(status_code=401, detail="Token requerido")
+    # token = authorization[7:].strip()
+    # if not await validar_stoken(token):
+    #     raise HTTPException(status_code=401, detail="Token inválido o expirado")
+    # return token
 
 HTML_403 = """<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>body{background:#0e0d0a;color:#e8e0cc;font-family:'Segoe UI',sans-serif;
