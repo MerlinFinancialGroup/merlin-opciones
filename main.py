@@ -2724,9 +2724,7 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
         max_profit = max(pnl_vals)
         max_risk   = min(pnl_vals)  # es negativo
 
-        # Filtro de budget
-        if budget and abs(costo_neto) > budget and costo_neto > 0:
-            return
+        lotes = int(budget) if budget and budget > 0 else 1
 
         # Break-evens (cruces por cero)
         be_list = []
@@ -2759,6 +2757,9 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
             "dias_vto":     dias,
             "spot":         spot,
             "costo_neto":   round(costo_neto, 4),
+            "costo_lote":   round(costo_neto * 100, 2),
+            "lotes":        lotes,
+            "total":        round(costo_neto * 100 * lotes, 2),
             "max_profit":   round(max_profit, 4) if max_profit < 1e8 else None,
             "max_risk":     round(max_risk,   4) if max_risk > -1e8  else None,
             "break_evens":  be_list,
@@ -2781,60 +2782,71 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
     # ── Estrategias direccionales ──
 
     # Long Call
+    # Long Call — compra call OTM
     add_strategy("Long Call", [
         {"tipo": "CALL", "strike_target": otm1c, "side": "long"}
     ], "direccional", ["bullish", "very_bullish"])
 
-    # Long Put
+    # Long Call agresivo — más OTM, más apalancamiento
+    add_strategy("Long Call Agresivo", [
+        {"tipo": "CALL", "strike_target": otm2c, "side": "long"}
+    ], "direccional", ["very_bullish"])
+
+    # Long Put — compra put OTM
     add_strategy("Long Put", [
         {"tipo": "PUT", "strike_target": otm1p, "side": "long"}
     ], "direccional", ["bearish", "very_bearish"])
 
-    # Bull Call Spread
+    # Long Put agresivo
+    add_strategy("Long Put Agresivo", [
+        {"tipo": "PUT", "strike_target": otm2p, "side": "long"}
+    ], "direccional", ["very_bearish"])
+
+    # Bull Call Spread — alcista limitado, menor costo que long call
     add_strategy("Bull Call Spread", [
         {"tipo": "CALL", "strike_target": atm,   "side": "long"},
         {"tipo": "CALL", "strike_target": otm1c, "side": "short"},
     ], "spread", ["bullish", "very_bullish"])
 
-    # Bear Put Spread
+    # Bear Put Spread — bajista limitado
     add_strategy("Bear Put Spread", [
         {"tipo": "PUT", "strike_target": atm,   "side": "long"},
         {"tipo": "PUT", "strike_target": otm1p, "side": "short"},
     ], "spread", ["bearish", "very_bearish"])
 
-    # Bear Call Spread
+    # Bear Call Spread — bajista/neutral: cobra crédito si el papel no sube
     add_strategy("Bear Call Spread", [
         {"tipo": "CALL", "strike_target": otm1c, "side": "short"},
         {"tipo": "CALL", "strike_target": otm2c, "side": "long"},
-    ], "spread", ["bearish", "neutral", "very_bearish"])
+    ], "spread", ["bearish", "very_bearish", "neutral"])
 
-    # Bull Put Spread
+    # Bull Put Spread — alcista/neutral: cobra crédito si el papel no baja
     add_strategy("Bull Put Spread", [
         {"tipo": "PUT", "strike_target": otm1p, "side": "short"},
         {"tipo": "PUT", "strike_target": otm2p, "side": "long"},
-    ], "spread", ["bullish", "neutral", "very_bullish"])
+    ], "spread", ["bullish", "very_bullish", "neutral"])
 
-    # Straddle
+    # Straddle — compra call+put ATM: apuesta a movimiento grande en cualquier dirección
     add_strategy("Straddle", [
         {"tipo": "CALL", "strike_target": atm, "side": "long"},
         {"tipo": "PUT",  "strike_target": atm, "side": "long"},
     ], "neutral_volatilidad", ["neutral"])
 
-    # Strangle
+    # Strangle — igual pero más barato, strikes más alejados
     add_strategy("Strangle", [
         {"tipo": "CALL", "strike_target": otm1c, "side": "long"},
         {"tipo": "PUT",  "strike_target": otm1p, "side": "long"},
     ], "neutral_volatilidad", ["neutral"])
 
-    # Covered Call (venta de call OTM)
+    # Venta Call OTM — ingreso si el papel no supera el strike (SOLO neutral)
     add_strategy("Venta Call OTM", [
         {"tipo": "CALL", "strike_target": otm1c, "side": "short"},
-    ], "generacion_ingreso", ["neutral", "bullish"])
+    ], "generacion_ingreso", ["neutral"])
 
-    # Venta Put OTM (cash-secured put)
+    # Venta Put OTM — ingreso si el papel no cae del strike (neutral/levemente alcista)
     add_strategy("Venta Put OTM", [
         {"tipo": "PUT", "strike_target": otm1p, "side": "short"},
-    ], "generacion_ingreso", ["neutral", "bullish", "very_bullish"])
+    ], "generacion_ingreso", ["neutral"])
 
     # Ordenar por score descendente, top 5
     strategies.sort(key=lambda x: -x["score"])
