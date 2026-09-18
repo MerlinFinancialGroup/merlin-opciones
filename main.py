@@ -1643,8 +1643,21 @@ async def veta_debug_raw(n: int = 10):
 
 @app.get("/api/opciones/subyacentes", dependencies=[Depends(require_auth)])
 async def get_subyacentes():
+    rows = state.get("opciones", [])
+    
+    if not rows:
+        rows = _pg_load_opciones()
+    if not rows:
+        pdf_bytes, fecha = _pg_load_latest()
+        if pdf_bytes:
+            rows, resumen, _ = parse_iamc_pdf(pdf_bytes)
+            if rows:
+                state["opciones"] = rows
+                state["resumen"] = resumen
+                state["fecha"] = fecha
+
     subyacentes = {}
-    for r in state["opciones"]:
+    for r in rows:
         s = r.get("subyacente")
         if not s: continue
         if s not in subyacentes:
@@ -1655,6 +1668,7 @@ async def get_subyacentes():
         else: entry["puts"] += 1
         entry["volumen_ars"]   += _to_float(r.get("volumen_ars")) or 0
         entry["open_interest"] += _to_float(r.get("open_interest")) or 0
+
     return {
         "fecha": state["fecha"],
         "total": len(subyacentes),
