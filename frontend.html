@@ -134,7 +134,7 @@ td.muted{color:#706858}
 .budget-input{background:#0e0d0a;border:0.5px solid #2a2510;color:#e8e0cc;padding:4px 8px;border-radius:4px;font-size:11px;font-family:'JetBrains Mono',monospace;outline:none;width:100px}
 .budget-input:focus{border-color:#C9960A}
 .est-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-.est-card{background:#12100a;border:0.5px solid #2a2510;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;transition:border-color .15s;min-height:480px}
+.est-card{background:#12100a;border:0.5px solid #2a2510;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;transition:border-color .15s;height:480px}
 .est-card:hover{border-color:#C9960A44}
 .est-card-left{display:flex;flex-direction:column;gap:8px;flex:0 0 200px;min-width:0}
 .est-card-right{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0}
@@ -152,7 +152,7 @@ td.muted{color:#706858}
 .est-leg{font-size:9px;font-family:'JetBrains Mono',monospace;color:#a09880;padding:2px 5px;background:#0e0d0a;border-radius:3px;border-left:2px solid}
 .est-leg.long{border-color:#3ab07a;color:#90d0b0}
 .est-leg.short{border-color:#c0392b;color:#d09090}
-.est-payoff-canvas{width:100%;height:260px;display:block;border-radius:4px}
+.est-payoff-canvas{width:100%;flex:1;display:block;border-radius:4px;min-height:0}
 .est-be{font-size:9px;font-family:'JetBrains Mono',monospace;color:#706858;text-align:center}
 .est-section-title{font-size:11px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;padding:6px 0 2px;border-bottom:0.5px solid #2a2510}
 .est-loading{display:flex;align-items:center;justify-content:center;height:200px;color:#706858;font-family:'JetBrains Mono',monospace;font-size:11px}
@@ -169,9 +169,9 @@ td.muted{color:#706858}
 .vis-kpi:first-child{border-left:none}
 .vis-kpi .k-lbl{font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.6px;color:#706858}
 .vis-kpi .k-val{font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-top:1px}
-.vis-body{flex:1;min-height:0;display:grid;grid-template-columns:55% 45%;overflow:hidden}
-.vis-left-panel{display:flex;flex-direction:column;overflow:hidden;border-right:1px solid #2a2510;min-width:0}
-.vis-right-panel{display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.vis-body{flex:1;overflow:hidden;position:relative}
+.vis-left-panel{position:absolute;top:0;left:0;width:55%;height:100%;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid #2a2510}
+.vis-right-panel{position:absolute;top:0;left:55%;right:0;height:100%;display:flex;flex-direction:column;overflow:hidden}
 .vis-graph-area{flex:1;min-height:0;position:relative;background:#0e0d0a}
 .vis-graph-canvas{width:100%;height:100%;display:block}
 .vis-date-label{position:absolute;bottom:6px;left:50%;transform:translateX(-50%);font-size:10px;font-family:'JetBrains Mono',monospace;color:#a09880;pointer-events:none}
@@ -1864,7 +1864,7 @@ function _drawVisGraph(canvas, s, VS, colDays, colDates, lotes, r_rate) {
     const y = ys(v);
     ctx.strokeStyle = '#1a1710'; ctx.lineWidth = 0.5;
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
-    ctx.fillStyle = '#706858'; ctx.font = '9px monospace'; ctx.textAlign = 'right';
+    ctx.fillStyle = '#d0c8a8'; ctx.font = '14px monospace'; ctx.textAlign = 'right';
     ctx.fillText((v >= 0 ? '+' : '') + fmtM(v), pad.l - 4, y + 3);
   }
 
@@ -2042,16 +2042,16 @@ function _drawAllPayoffs(data) {
 
 function _drawPayoff(canvas, s) {
   const dpr = window.devicePixelRatio || 1;
-  const W   = canvas.offsetWidth || 320;
-  const H   = 120;
-  canvas.width  = W * dpr;
-  canvas.height = H * dpr;
+  const W   = canvas.offsetWidth  || canvas.parentElement?.offsetWidth  || 320;
+  const H   = canvas.offsetHeight || canvas.parentElement?.offsetHeight || 260;
+  canvas.width  = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
   canvas.style.width  = W + 'px';
   canvas.style.height = H + 'px';
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
 
-  const pad = { l: 52, r: 10, t: 12, b: 28 };
+  const pad = { l: 54, r: 12, t: 14, b: 30 };
   const cW  = W - pad.l - pad.r;
   const cH  = H - pad.t - pad.b;
 
@@ -2108,13 +2108,13 @@ function _drawPayoff(canvas, s) {
   ctx.strokeStyle='#C9960A'; ctx.lineWidth=2; ctx.stroke();
 
   // Labels Y
-  ctx.fillStyle='#a09880'; ctx.font=`${Math.round(10*dpr)/dpr}px monospace`; ctx.textAlign='right';
+  ctx.fillStyle='#d0c8a8'; ctx.font='14px monospace'; ctx.textAlign='right';
   [pRange, 0, -pRange].forEach(v=>{
     const y=ys(v), txt=v===0?'0':(v>0?'+':'')+fmtM(v);
     ctx.fillText(txt, pad.l-4, y+4);
   });
   // Labels X
-  ctx.fillStyle='#a09880'; ctx.textAlign='center';
+  ctx.fillStyle='#d0c8a8'; ctx.textAlign='center';
   [sMin, s.spot||(sMin+sMax)/2, sMax].forEach(v=>{
     const lbl=v>=1000?(v/1000).toFixed(1)+'k':Math.round(v).toString();
     ctx.fillText('$'+lbl, xs(v), H-pad.b+14);
