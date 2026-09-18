@@ -134,24 +134,26 @@ td.muted{color:#706858}
 .budget-input{background:#0e0d0a;border:0.5px solid #2a2510;color:#e8e0cc;padding:4px 8px;border-radius:4px;font-size:11px;font-family:'JetBrains Mono',monospace;outline:none;width:100px}
 .budget-input:focus{border-color:#C9960A}
 .est-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-.est-card{background:#12100a;border:0.5px solid #2a2510;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px;transition:border-color .15s}
+.est-card{background:#12100a;border:0.5px solid #2a2510;border-radius:8px;padding:12px;display:flex;flex-direction:row;gap:10px;transition:border-color .15s;align-items:stretch}
 .est-card:hover{border-color:#C9960A44}
-.est-card-header{display:flex;justify-content:space-between;align-items:flex-start}
+.est-card-left{display:flex;flex-direction:column;gap:8px;flex:0 0 200px;min-width:0}
+.est-card-right{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0}
+.est-card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px}
 .est-name{font-size:14px;font-weight:700;color:#e8e0cc}
 .est-cat{font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.8px;color:#706858;margin-top:2px}
 .est-chance{text-align:right}
 .est-chance .val{font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace}
 .est-chance .lbl{font-size:9px;color:#706858;font-family:'JetBrains Mono',monospace;text-transform:uppercase}
-.est-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.est-metric{background:#0e0d0a;border:0.5px solid #1a1710;border-radius:4px;padding:7px 8px}
-.est-metric .m-lbl{font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.6px;color:#706858;margin-bottom:2px}
+.est-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.est-metric{background:#0e0d0a;border:0.5px solid #1a1710;border-radius:4px;padding:5px 6px}
+.est-metric .m-lbl{font-size:8px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.4px;color:#706858;margin-bottom:1px}
 .est-metric .m-val{font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace}
-.est-legs{display:flex;flex-direction:column;gap:3px}
-.est-leg{font-size:10px;font-family:'JetBrains Mono',monospace;color:#a09880;padding:3px 6px;background:#0e0d0a;border-radius:3px;border-left:2px solid}
+.est-legs{display:flex;flex-direction:column;gap:2px}
+.est-leg{font-size:9px;font-family:'JetBrains Mono',monospace;color:#a09880;padding:2px 5px;background:#0e0d0a;border-radius:3px;border-left:2px solid}
 .est-leg.long{border-color:#3ab07a;color:#90d0b0}
 .est-leg.short{border-color:#c0392b;color:#d09090}
-.est-payoff-canvas{width:100%;height:192px;display:block;border-radius:4px}
-.est-be{font-size:10px;font-family:'JetBrains Mono',monospace;color:#706858;text-align:center}
+.est-payoff-canvas{width:100%;height:100%;min-height:160px;display:block;border-radius:4px}
+.est-be{font-size:9px;font-family:'JetBrains Mono',monospace;color:#706858;text-align:center}
 .est-section-title{font-size:11px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;padding:6px 0 2px;border-bottom:0.5px solid #2a2510}
 .est-loading{display:flex;align-items:center;justify-content:center;height:200px;color:#706858;font-family:'JetBrains Mono',monospace;font-size:11px}
 
@@ -1535,38 +1537,42 @@ function _renderEstCard(s, vto, idx) {
 
   return `
   <div class="est-card" data-idx="${idx}" data-vto="${esc(vto)}" style="cursor:pointer" title="Click para ver detalle">
-    <div class="est-card-header">
-      <div>
-        <div class="est-name">${esc(s.nombre)} <span style="font-size:9px;color:#706858;font-weight:400">↗ ver detalle</span></div>
-        <div class="est-cat">${CAT_LABEL[s.categoria]||s.categoria}</div>
+    <div class="est-card-left">
+      <div class="est-card-header">
+        <div>
+          <div class="est-name">${esc(s.nombre)} <span style="font-size:9px;color:#706858;font-weight:400">↗ ver detalle</span></div>
+          <div class="est-cat">${CAT_LABEL[s.categoria]||s.categoria}</div>
+        </div>
+        <div class="est-chance">
+          <div class="val" style="color:${chanceColor}">${s.chance!=null?s.chance.toFixed(1)+'%':'—'}</div>
+          <div class="lbl">Chance</div>
+        </div>
       </div>
-      <div class="est-chance">
-        <div class="val" style="color:${chanceColor}">${s.chance!=null?s.chance.toFixed(1)+'%':'—'}</div>
-        <div class="lbl">Chance</div>
+      <div class="est-metrics">
+        <div class="est-metric">
+          <div class="m-lbl">Gan. máx</div>
+          <div class="m-val pos">${maxProfitTxt}</div>
+        </div>
+        <div class="est-metric">
+          <div class="m-lbl">Riesgo máx</div>
+          <div class="m-val neg">${maxRiskTxt}</div>
+        </div>
+        <div class="est-metric">
+          <div class="m-lbl">Ret/Riesgo</div>
+          <div class="m-val gold">${retRisk}</div>
+        </div>
+        ${tgtPnl != null ? `
+        <div class="est-metric" style="grid-column:1/-1;border-color:#9b59b644">
+          <div class="m-lbl">P&L al target $${fmt(tgt)}</div>
+          <div class="m-val" style="color:${tgtPnl>=0?'#3ab07a':'#c0392b'}">${tgtPnl>=0?'+':''}$${fmt(tgtPnl)}/acc · ${tgtPnl*lotes*100>=0?'+':''}$${fmt(tgtPnl*lotes*100)}</div>
+        </div>` : ''}
       </div>
+      <div class="est-legs">${legsHtml}</div>
     </div>
-    <div class="est-metrics">
-      <div class="est-metric">
-        <div class="m-lbl">Ganancia máx</div>
-        <div class="m-val pos">${maxProfitTxt}</div>
-      </div>
-      <div class="est-metric">
-        <div class="m-lbl">Riesgo máx</div>
-        <div class="m-val neg">${maxRiskTxt}</div>
-      </div>
-      <div class="est-metric">
-        <div class="m-lbl">Ret/Riesgo</div>
-        <div class="m-val gold">${retRisk}</div>
-      </div>
-      ${tgtPnl != null ? `
-      <div class="est-metric" style="grid-column:1/-1;border-color:#9b59b644">
-        <div class="m-lbl">P&L al target $${fmt(tgt)}</div>
-        <div class="m-val" style="color:${tgtPnl>=0?'#3ab07a':'#c0392b'}">${tgtPnl>=0?'+':''}$${fmt(tgtPnl)} por acción · ${lotes} lote${lotes>1?'s':''} = ${tgtPnl*lotes*100>=0?'+':''}$${fmt(tgtPnl*lotes*100)}</div>
-      </div>` : ''}
+    <div class="est-card-right">
+      <canvas class="est-payoff-canvas" id="${canvasId}"></canvas>
+      <div class="est-be">Break-even: ${beList}</div>
     </div>
-    <canvas class="est-payoff-canvas" id="${canvasId}" height="192"></canvas>
-    <div class="est-be">Break-even: ${beList}</div>
-    <div class="est-legs">${legsHtml}</div>
   </div>`;
 }
 
