@@ -275,7 +275,6 @@ input[type=range].rc-slider::-webkit-slider-thumb{-webkit-appearance:none;width:
           <button class="tab-btn active" data-view="cadena">Cadena</button>
           <button class="tab-btn" data-view="smile">IV Smile</button>
           <button class="tab-btn" data-view="estrategias">Estrategias</button>
-          <button class="tab-btn" data-view="resumen">Resumen</button>
         </div>
       </div>
 
@@ -663,7 +662,6 @@ function renderView() {
   if (state.view === 'cadena') renderCadena();
   else if (state.view === 'smile') renderSmile();
   else if (state.view === 'estrategias') renderEstrategias();
-  else renderResumen();
 }
 
 function renderSmile() {
