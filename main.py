@@ -32,7 +32,6 @@ VETA_ACCOUNT  = os.getenv("VETA_ACCOUNT", "")
 TZ_ARG        = ZoneInfo("America/Argentina/Buenos_Aires")
 
 # ── Tasas libre de riesgo por vencimiento (centralizadas) ─────────────────────
-# Fuente: IAMC PDF. Actualizar cuando aparezca un vencimiento nuevo.
 _TASA_DEFAULT = 0.2287
 _TASA_FIJA: dict[str, float] = {
     "2026-10-16": 0.2287,
@@ -40,7 +39,6 @@ _TASA_FIJA: dict[str, float] = {
 }
 
 def _get_tasa(vto: str, tasas_rt: dict | None = None) -> float:
-    """Devuelve la tasa libre para el vencimiento dado. Logguea si no la encuentra."""
     rt = (tasas_rt or {}).get(vto)
     if rt:
         return float(rt)
@@ -50,12 +48,10 @@ def _get_tasa(vto: str, tasas_rt: dict | None = None) -> float:
     logger.warning(f"Tasa no encontrada para vencimiento {vto!r} — usando default {_TASA_DEFAULT}")
     return _TASA_DEFAULT
 
-
 IAMC_BASE = "https://www.iamc.com.ar/Informe/InformeDiarioOpciones"
 
 app = FastAPI(title="Merlin Opciones API")
 
-# ── CORS: solo orígenes propios ───────────────────────────────────────────────
 _ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS",
     "https://merlin-financial-group.netlify.app,https://web-production-2a938.up.railway.app"
 ).split(",") if o.strip()]
@@ -126,44 +122,36 @@ def _pg_init():
                 moneyness       TEXT,
                 dias_vto        INTEGER,
                 precio_suby     NUMERIC,
-                -- Precios
                 ultimo          NUMERIC,
                 apertura        NUMERIC,
                 minimo          NUMERIC,
                 maximo          NUMERIC,
                 var_pct         NUMERIC,
-                -- Volumen y OI
                 volumen_ars     NUMERIC,
                 cant_ops        INTEGER,
                 open_interest   INTEGER,
                 var_oi_pct      NUMERIC,
-                -- Precio teórico
                 precio_teorico  NUMERIC,
                 desvio_teorico  NUMERIC,
                 valor_temporal  NUMERIC,
-                -- Volatilidades
                 vi_iamc         NUMERIC,
                 vi_calc         NUMERIC,
                 vi_bid          NUMERIC,
                 vi_offer        NUMERIC,
                 vol_hist_40r    NUMERIC,
-                -- Bid/Ask al cierre 17hs
                 bid_cierre      NUMERIC,
                 ask_cierre      NUMERIC,
                 qty_bid_cierre  NUMERIC,
                 qty_ask_cierre  NUMERIC,
-                -- Griegas
                 delta           NUMERIC,
                 gamma           NUMERIC,
                 theta           NUMERIC,
                 vega            NUMERIC,
                 rho             NUMERIC,
-                -- Metadata
                 tasa_libre      NUMERIC,
                 iv_source       TEXT,
                 PRIMARY KEY (symbol, fecha)
             );
-
             CREATE TABLE IF NOT EXISTS iamc_opciones_pdf (
                 id INTEGER PRIMARY KEY DEFAULT 1,
                 pdf_bytes BYTEA,
@@ -204,9 +192,7 @@ def _pg_init():
                 PRIMARY KEY (fecha, symbol)
             );
         """)
-        # Migraciones — ALTER TABLE IF NOT EXISTS la columna para tablas ya creadas
         migrations = [
-            # opciones_cierres — columnas que pueden faltar en tablas creadas antes
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS moneyness TEXT;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS dias_vto INTEGER;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS precio_suby NUMERIC;",
@@ -241,7 +227,6 @@ def _pg_init():
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS qty_bid_cierre NUMERIC;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS qty_ask_cierre NUMERIC;",
             "ALTER TABLE opciones_cierres ADD COLUMN IF NOT EXISTS iv_source TEXT;",
-            # bid_ask_cierre
             "ALTER TABLE bid_ask_cierre ADD COLUMN IF NOT EXISTS ultimo NUMERIC;",
         ]
         for m in migrations:
@@ -297,7 +282,6 @@ def _pg_save_opciones(rows: list, fecha: str):
         logger.error(f"PG save opciones error: {e}")
 
 def _pg_save_veta_books():
-    """Persiste _veta_books en PG para sobrevivir reinicios."""
     if not HAS_PG or not DATABASE_URL or not _veta_books: return
     try:
         conn = _pg_conn(); cur = conn.cursor()
@@ -313,7 +297,6 @@ def _pg_save_veta_books():
         logger.error(f"PG save veta_books error: {e}")
 
 def _pg_load_veta_books():
-    """Restaura _veta_books desde PG al arrancar."""
     if not HAS_PG or not DATABASE_URL: return
     try:
         conn = _pg_conn(); cur = conn.cursor()
@@ -327,13 +310,11 @@ def _pg_load_veta_books():
         logger.error(f"PG load veta_books error: {e}")
 
 def _pg_save_cierres(fecha: str):
-    """Guarda los últimos operados de _veta_md en opciones_cierres para la fecha dada."""
     if not HAS_PG or not DATABASE_URL or not _veta_md: return
     rows_iamc = {r["symbol"]: r for r in state.get("opciones", [])}
     saved = 0
     try:
         conn = _pg_conn(); cur = conn.cursor()
-        TASA_VTO = {vto: _get_tasa(vto, _tasas_rt) for vto in list(_TASA_FIJA) + list(_tasas_rt or {})}
         for sym, snap in _veta_md.items():
             ultimo = snap.get("ultimo")
             if not ultimo: continue
@@ -348,7 +329,6 @@ def _pg_save_cierres(fecha: str):
                 T = dias / 365.0
                 r_rate = _get_tasa(vto, _tasas_rt)
                 vi_calc = _calc_iv(ultimo, S, K, T, r_rate, tipo)
-            # Bid/ask del cierre de Veta
             bid_c = snap.get("bid")
             ask_c = snap.get("ask")
             cur.execute("""
@@ -377,24 +357,20 @@ def _pg_save_cierres(fecha: str):
         logger.error(f"PG save cierres error: {e}")
 
 def _pg_save_bid_ask_cierre(fecha: str):
-    """Guarda el último bid/ask de cada opción a las 17:00 para consulta post-rueda."""
     if not HAS_PG or not DATABASE_URL: return
     saved = 0
     try:
         conn = _pg_conn(); cur = conn.cursor()
         for sec_id, book in _veta_books.items():
-            # Solo guardar si tiene puntas reales
             bid = book.get("bid")
             ask = book.get("ask")
             if not bid and not ask:
-                # Intentar desde _veta_md
                 sym = _norm_veta_sym(sec_id)
                 md = _veta_md.get(sym)
                 if md:
                     bid = md.get("bid")
                     ask = md.get("ask")
             if not bid and not ask: continue
-            # Obtener symbol limpio
             sym = _norm_veta_sym(sec_id)
             if not sym: continue
             qty_bid = book.get("qty_bid")
@@ -414,7 +390,6 @@ def _pg_save_bid_ask_cierre(fecha: str):
         logger.error(f"PG save bid_ask_cierre error: {e}")
 
 def _pg_load_bid_ask_cierre(fecha: str) -> dict:
-    """Carga bid/ask del cierre de una fecha para mostrar en la tabla."""
     if not HAS_PG or not DATABASE_URL: return {}
     try:
         conn = _pg_conn(); cur = conn.cursor()
@@ -430,7 +405,6 @@ def _pg_load_bid_ask_cierre(fecha: str) -> dict:
         return {}
 
 def _pg_save_resumen_diario(rows: list, fecha: str):
-    """Guarda el resumen diario por subyacente (precio, calls, puts, OI, P/C ratio, etc.)."""
     if not HAS_PG or not DATABASE_URL or not rows: return
     from collections import defaultdict
     by_suby = defaultdict(lambda: {"calls":0,"puts":0,"vol_ars":0,"oi":0,
@@ -450,7 +424,6 @@ def _pg_save_resumen_diario(rows: list, fecha: str):
     try:
         conn = _pg_conn(); cur = conn.cursor()
         for sub, d in by_suby.items():
-            total = d["calls"] + d["puts"]
             pc = round(d["puts"]/d["calls"], 4) if d["calls"] > 0 else None
             dias = d["dias"]
             cur.execute("""
@@ -478,12 +451,10 @@ def _pg_save_resumen_diario(rows: list, fecha: str):
         logger.error(f"PG save resumen error: {e}")
 
 def _pg_save_cierres_iamc(rows: list, fecha: str):
-    """Guarda todos los datos de la cadena IAMC en opciones_cierres para histórico."""
     if not HAS_PG or not DATABASE_URL or not rows: return
     saved = 0
     try:
         conn = _pg_conn(); cur = conn.cursor()
-        TASA_VTO = {vto: _get_tasa(vto, _tasas_rt) for vto in list(_TASA_FIJA) + list(_tasas_rt or {})}
         for r in rows:
             sym = r.get("symbol")
             if not sym: continue
@@ -557,7 +528,6 @@ def _pg_save_cierres_iamc(rows: list, fecha: str):
         logger.error(f"PG save cierres IAMC error: {e}")
 
 def _pg_load_cierre_anterior(symbol: str, fecha_hoy: str) -> dict | None:
-    """Carga el último cierre disponible para un symbol antes de fecha_hoy."""
     if not HAS_PG or not DATABASE_URL: return None
     try:
         conn = _pg_conn(); cur = conn.cursor()
@@ -689,7 +659,6 @@ def _to_float(v):
     except (TypeError, ValueError): return None
 
 def _get_spot_precio(subyacente: str, fallback_precio: float = None) -> float:
-    """Helper unificado para obtener siempre el precio online sobre el del PDF."""
     suby = (subyacente or "").upper()
     if suby in _precios_suby and _precios_suby[suby] is not None:
         return float(_precios_suby[suby])
@@ -825,8 +794,6 @@ def _calc_iv(precio_mercado, S, K, T, r, tipo, tol=1e-5, max_iter=100):
     return round(iv, 4) if 0.5 <= iv <= 500 else None
 
 def _enrich_iv(rows: list) -> list:
-    TASA_VTO = {k: (_tasas_rt.get(k) or v) for k, v in {"2026-10-16": 0.2287, "2026-12-18": 0.2418}.items()}
-
     iv_atm_by_suby = {}
     for r in rows:
         iv = _to_float(r.get("vol_implicita"))
@@ -1384,35 +1351,47 @@ async def descargar_iamc_pdf(target_date: date = None) -> bool:
         state["descarga_ok"] = False
         return False
 
-# ── Scheduler ─────────────────────────────────────────────────────────────────
+# ── Scheduler Corregido y Blindado ─────────────────────────────────────────────
 async def scheduler():
     rows = _pg_load_opciones()
-    if rows:
-        _, fecha = _pg_load_latest()
-        from collections import defaultdict
-        resumen = defaultdict(lambda: {"calls":0,"puts":0,"vol_ars":0,"oi":0})
-        for r in rows:
-            sub = r.get("subyacente","")
-            if r.get("tipo") == "CALL": resumen[sub]["calls"] += 1
-            elif r.get("tipo") == "PUT": resumen[sub]["puts"] += 1
-            resumen[sub]["vol_ars"] += _to_float(r.get("volumen_ars")) or 0
-            resumen[sub]["oi"]      += _to_float(r.get("open_interest")) or 0
-        state["opciones"]    = rows
-        state["resumen"]     = dict(resumen)
-        state["fecha"]       = fecha or ""
-        state["updated_at"]  = datetime.now(TZ_ARG).isoformat()
-        state["descarga_ok"] = True
-    else:
+    
+    if not rows:
+        logger.info("[Scheduler] Sin datos en iamc_opciones_data. Reintentando desde PDF en PG...")
         pdf_bytes, fecha = _pg_load_latest()
         if pdf_bytes:
             rows, resumen, fecha_str = parse_iamc_pdf(pdf_bytes)
-            state["opciones"]    = rows
-            state["resumen"]     = resumen
-            state["fecha"]       = fecha
-            state["updated_at"]  = datetime.now(TZ_ARG).isoformat()
-            state["descarga_ok"] = True
-        else:
-            await descargar_iamc_pdf()
+            if rows:
+                _pg_save_opciones(rows, fecha or datetime.now(TZ_ARG).strftime("%Y-%m-%d"))
+                state["opciones"] = rows
+                state["resumen"] = resumen
+                state["fecha"] = fecha
+                state["updated_at"] = datetime.now(TZ_ARG).isoformat()
+                state["descarga_ok"] = True
+                logger.info(f"[Scheduler] Carga de emergencia exitosa: {len(rows)} opciones desde PDF")
+                _pg_load_veta_books()
+                return
+
+    if not rows:
+        logger.info("[Scheduler] Sin PDF guardado. Forzando descarga online IAMC...")
+        await descargar_iamc_pdf()
+        return
+
+    _, fecha = _pg_load_latest()
+    from collections import defaultdict
+    resumen = defaultdict(lambda: {"calls": 0, "puts": 0, "vol_ars": 0, "oi": 0})
+    for r in rows:
+        sub = r.get("subyacente", "")
+        if r.get("tipo") == "CALL": resumen[sub]["calls"] += 1
+        elif r.get("tipo") == "PUT": resumen[sub]["puts"] += 1
+        resumen[sub]["vol_ars"] += _to_float(r.get("volumen_ars")) or 0
+        resumen[sub]["oi"] += _to_float(r.get("open_interest")) or 0
+
+    state["opciones"] = rows
+    state["resumen"] = dict(resumen)
+    state["fecha"] = fecha or datetime.now(TZ_ARG).strftime("%Y-%m-%d")
+    state["updated_at"] = datetime.now(TZ_ARG).isoformat()
+    state["descarga_ok"] = True
+    logger.info(f"[Scheduler] Estado inicializado correctamente: {len(rows)} opciones en memoria")
     _pg_load_veta_books()
 
 async def _guardar_cierres_si_corresponde():
@@ -2367,7 +2346,6 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
     if not rows_suby:
         return []
 
-    # Priorizar spot desde _precios_suby en vivo, fallback a row_suby
     raw_spot = _get_spot_precio(subyacente, next((r["precio_suby"] for r in rows_suby if r.get("precio_suby")), None))
     spot = float(raw_spot) if raw_spot else 0.0
     if spot <= 0:
@@ -2482,8 +2460,6 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
     otm2c = spot * 1.10
     otm1p = spot * 0.95
     otm2p = spot * 0.90
-    itm1c = spot * 0.95
-    itm1p = spot * 1.05
 
     add_strategy("Long Call", [
         {"tipo": "CALL", "strike_target": otm1c, "side": "long"}
