@@ -158,9 +158,9 @@ td.muted{color:#706858}
 .est-loading{display:flex;align-items:center;justify-content:center;height:200px;color:#706858;font-family:'JetBrains Mono',monospace;font-size:11px}
 
 /* ── VISUALIZADOR ── */
-.vis-overlay{position:fixed;inset:0;background:#0e0d0a;z-index:200;display:flex;flex-direction:column;overflow:hidden}
+.vis-overlay{position:fixed;inset:0;background:#0e0d0a;z-index:1000;display:flex;flex-direction:column;overflow:hidden}
 .vis-header{display:flex;align-items:center;gap:14px;padding:8px 20px;border-bottom:1px solid #2a2510;background:#12100a;flex-shrink:0;flex-wrap:wrap}
-.vis-back{background:none;border:0.5px solid #2a2510;color:#a09880;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace}
+.vis-back{background:#1a1810;border:1px solid #C9960A;color:#C9960A;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:13px;font-family:Arial,sans-serif;font-weight:700}
 .vis-back:hover{border-color:#C9960A;color:#C9960A}
 .vis-title{font-size:15px;font-weight:700;color:#e8e0cc}
 .vis-subtitle{font-size:10px;font-family:'JetBrains Mono',monospace;color:#706858}
@@ -548,7 +548,7 @@ async function loadCadena(suby, silent = false) {
     populateVtos();          // primero el select (el header lee el filtro elegido)
     updateSubyHeader(suby);
 
-    if (!unchanged) renderView();
+    if (!unchanged && !EST_STATE.visStrat) renderView();
     if (silent) content.scrollTop = scrollTop;
   } catch(e) {
     if (e.name === 'AbortError') return;
