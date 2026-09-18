@@ -1490,6 +1490,7 @@ function renderEstrategias() {
     _estStateSave();
     loadEstrategias();
   });
+}
   // Click en card → visualizador
   document.getElementById('est-results').addEventListener('click', e => {
     const card = e.target.closest('.est-card[data-idx]');
