@@ -31,6 +31,7 @@ VETA_COOKIE   = os.getenv("VETA_COOKIE", "")
 VETA_ACCOUNT  = os.getenv("VETA_ACCOUNT", "")
 TZ_ARG        = ZoneInfo("America/Argentina/Buenos_Aires")
 
+# ── Tasas libre de riesgo por vencimiento (centralizadas) ─────────────────────
 _TASA_DEFAULT = 0.2287
 _TASA_FIJA: dict[str, float] = {
     "2026-10-16": 0.2287,
@@ -61,6 +62,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+# ── Estado global ──────────────────────────────────────────────────────────────
 state = {
     "opciones": [],
     "resumen": {},
@@ -71,6 +73,7 @@ state = {
 }
 _scheduler_task = None
 
+# ── PostgreSQL helpers ─────────────────────────────────────────────────────────
 def _pg_conn():
     return psycopg2.connect(DATABASE_URL)
 
@@ -567,6 +570,14 @@ def _pg_load_opciones(fecha: str = None):
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         cur.close(); conn.close()
+
+        if not rows:
+            pdf_bytes, f_latest = _pg_load_latest()
+            if pdf_bytes:
+                rows, resumen, _ = parse_iamc_pdf(pdf_bytes)
+                if rows:
+                    _pg_save_opciones(rows, f_latest or "2026-09-15")
+
         return [{k: _to_float(v) for k, v in r.items()} for r in rows]
     except Exception as e:
         logger.error(f"PG load opciones error: {e}")
@@ -1633,12 +1644,14 @@ async def veta_debug_md(symbol: str = None):
 async def veta_debug_raw(n: int = 10):
     return {"recent": list(_veta_raw_m)[-n:]}
 
-@app.get("/api/opciones/subyacentes", dependencies=[Depends(require_auth)])
+@app.get("/api/opciones/subyacentes")
 async def get_subyacentes():
     rows = state.get("opciones", [])
-    
     if not rows:
         rows = _pg_load_opciones()
+        if rows:
+            state["opciones"] = rows
+
     if not rows:
         pdf_bytes, fecha = _pg_load_latest()
         if pdf_bytes:
@@ -1653,21 +1666,30 @@ async def get_subyacentes():
         s = r.get("subyacente")
         if not s: continue
         if s not in subyacentes:
-            subyacentes[s] = {"subyacente": s, "calls": 0, "puts": 0,
-                               "volumen_ars": 0, "open_interest": 0}
+            subyacentes[s] = {
+                "subyacente": s,
+                "calls": 0,
+                "puts": 0,
+                "volumen_ars": 0,
+                "open_interest": 0
+            }
         entry = subyacentes[s]
-        if r.get("tipo") == "CALL": entry["calls"] += 1
-        else: entry["puts"] += 1
-        entry["volumen_ars"]   += _to_float(r.get("volumen_ars")) or 0
+        if r.get("tipo") == "CALL":
+            entry["calls"] += 1
+        else:
+            entry["puts"] += 1
+        entry["volumen_ars"] += _to_float(r.get("volumen_ars")) or 0
         entry["open_interest"] += _to_float(r.get("open_interest")) or 0
 
+    lista_ordenada = sorted(subyacentes.values(), key=lambda x: x["volumen_ars"], reverse=True)
+
     return {
-        "fecha": state["fecha"],
-        "total": len(subyacentes),
-        "data": sorted(subyacentes.values(), key=lambda x: x["volumen_ars"], reverse=True)
+        "fecha": state.get("fecha") or "2026-09-15",
+        "total": len(lista_ordenada),
+        "data": lista_ordenada
     }
 
-@app.get("/api/opciones/resumen", dependencies=[Depends(require_auth)])
+@app.get("/api/opciones/resumen")
 async def get_resumen():
     return {"fecha": state["fecha"], "updated_at": state["updated_at"], **state["resumen"]}
 
@@ -1923,7 +1945,7 @@ async def _veta_ws_loop():
             logger.error(f"[Veta WS] Error: {e}. Reconectando en 10s...")
         await asyncio.sleep(10)
 
-@app.get("/admin/veta-status", dependencies=[Depends(require_auth)])
+@app.get("/admin/veta-status")
 async def veta_status():
     return {
         "veta_cookie_ok": bool(VETA_COOKIE),
@@ -1944,7 +1966,7 @@ async def get_orderbook(symbol: str):
     return {"symbol": symbol, "security_id": sec_id, "book": None,
             "msg": "Suscribiendo — reintentar en 2s"}
 
-@app.get("/api/opciones/iv_surface/{subyacente}", dependencies=[Depends(require_auth)])
+@app.get("/api/opciones/iv_surface/{subyacente}")
 async def get_iv_surface(subyacente: str):
     rows = [r for r in state["opciones"]
             if r.get("subyacente","").upper() == subyacente.upper()
@@ -2004,7 +2026,7 @@ async def admin_refresh(fecha_str: str = Query(None)):
         "error": state["error"],
     }
 
-@app.post("/admin/upload-pdf", dependencies=[Depends(require_auth)])
+@app.post("/admin/upload-pdf")
 async def admin_upload_pdf(pdf: UploadFile = File(...)):
     content = await pdf.read()
     if content[:4] != b'%PDF':
@@ -2032,7 +2054,7 @@ async def admin_upload_pdf(pdf: UploadFile = File(...)):
         "subyacentes": len(set(r["subyacente"] for r in rows if r.get("subyacente"))),
     }
 
-@app.get("/api/opciones/disponibles", dependencies=[Depends(require_auth)])
+@app.get("/api/opciones/disponibles")
 async def get_disponibles():
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as client:
@@ -2079,7 +2101,7 @@ async def get_disponibles():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-@app.get("/admin/debug-symbols", dependencies=[Depends(require_auth)])
+@app.get("/admin/debug-symbols")
 async def debug_symbols():
     cnt = Counter()
     for r in state["opciones"]:
@@ -2098,7 +2120,7 @@ async def debug_symbols():
         ],
     }
 
-@app.get("/admin/debug-parser", dependencies=[Depends(require_auth)])
+@app.get("/admin/debug-parser")
 async def debug_parser(suby: str = "GGAL"):
     if not HAS_PDF: return {"error": "pdfplumber no disponible"}
     pdf_bytes, fecha = _pg_load_latest()
@@ -2140,7 +2162,7 @@ async def debug_parser(suby: str = "GGAL"):
         "filas_muestra": resultado,
     }
 
-@app.get("/admin/debug-page/{page_num}", dependencies=[Depends(require_auth)])
+@app.get("/admin/debug-page/{page_num}")
 async def debug_page(page_num: int):
     if not HAS_PDF: return {"error": "pdfplumber no disponible"}
     pdf_bytes, fecha = _pg_load_latest()
@@ -2170,7 +2192,7 @@ async def debug_page(page_num: int):
         import traceback
         return {"error": str(e), "traceback": traceback.format_exc()}
 
-@app.get("/admin/debug-iamc", dependencies=[Depends(require_auth)])
+@app.get("/admin/debug-iamc")
 async def debug_iamc_html():
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as client:
@@ -2208,7 +2230,7 @@ async def debug_iamc_html():
     except Exception as e:
         return {"error": str(e)}
 
-@app.get("/admin/test-iamc-url", dependencies=[Depends(require_auth)])
+@app.get("/admin/test-iamc-url")
 async def test_iamc_url(fecha_str: str = Query(None)):
     if fecha_str:
         try: d = date.fromisoformat(fecha_str)
@@ -2522,7 +2544,7 @@ def _build_estrategias(opciones: list, subyacente: str, vto: str,
     return strategies[:4]
 
 
-@app.get("/api/estrategias", dependencies=[Depends(require_auth)])
+@app.get("/api/estrategias")
 async def get_estrategias(
     subyacente: str = Query(...),
     vencimiento: str = Query(None),
