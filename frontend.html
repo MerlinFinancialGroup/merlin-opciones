@@ -187,11 +187,11 @@ input[type=range].vis-range::-webkit-slider-thumb{-webkit-appearance:none;width:
 .vis-tab.active{background:#12100a;color:#e8e0cc;border-color:#2a2510;border-bottom:1px solid #12100a;font-weight:600}
 .vis-content-area{flex:1;overflow:auto;background:#0e0d0a;border-top:1px solid #2a2510}
 .vis-heatmap{height:100%}
-.vis-heatmap table{border-collapse:collapse;font-size:9px;font-family:Arial,sans-serif;white-space:nowrap;width:100%}
-.vis-heatmap th{position:sticky;top:0;background:#12100a;padding:2px 4px;text-align:center;color:#706858;border-bottom:1px solid #2a2510;font-size:9px;font-family:Arial,sans-serif;z-index:2;white-space:nowrap}
+.vis-heatmap table{border-collapse:collapse;font-size:12px;font-family:Arial,sans-serif;white-space:nowrap;width:100%}
+.vis-heatmap th{position:sticky;top:0;background:#12100a;padding:2px 4px;text-align:center;color:#706858;border-bottom:1px solid #2a2510;font-size:12px;font-family:Arial,sans-serif;z-index:2;white-space:nowrap}
 .vis-heatmap th.sticky-col{position:sticky;left:0;z-index:3;background:#12100a;text-align:right}
-.vis-heatmap td{padding:1px 4px;text-align:right;border:0.5px solid #1a1710;font-size:9px;font-family:Arial,sans-serif;white-space:nowrap}
-.vis-heatmap td.price-col{position:sticky;left:0;background:#0e0d0a;color:#a09880;font-weight:500;z-index:1;border-right:1px solid #2a2510;padding:1px 5px;font-size:9px;font-family:Arial,sans-serif}
+.vis-heatmap td{padding:1px 4px;text-align:right;border:0.5px solid #1a1710;font-size:12px;font-family:Arial,sans-serif;white-space:nowrap}
+.vis-heatmap td.price-col{position:sticky;left:0;background:#0e0d0a;color:#a09880;font-weight:500;z-index:1;border-right:1px solid #2a2510;padding:1px 5px;font-size:12px;font-family:Arial,sans-serif}
 .vis-legs-row{display:flex;gap:8px;padding:10px 20px;flex-wrap:wrap;flex-shrink:0;border-bottom:1px solid #2a2510;background:#0a0906}
 .vis-leg-card{border:0.5px solid #2a2510;border-radius:4px;padding:6px 12px;display:flex;gap:14px;align-items:center}
 .vis-leg-card .vl-name{font-size:11px;font-weight:700}
@@ -1888,7 +1888,7 @@ function _drawVisGraph(canvas, s, VS, colDays, colDates, lotes, r_rate) {
     const y = ys(v);
     ctx.strokeStyle = '#1a1710'; ctx.lineWidth = 0.5;
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
-    ctx.fillStyle = '#d0c8a8'; ctx.font = '10px Arial'; ctx.textAlign = 'right';
+    ctx.fillStyle = '#d0c8a8'; ctx.font = '13px Arial'; ctx.textAlign = 'right';
     ctx.fillText((v >= 0 ? '+' : '') + fmtM(v), pad.l - 4, y + 3);
   }
 
@@ -1966,7 +1966,7 @@ function _drawVisGraph(canvas, s, VS, colDays, colDates, lotes, r_rate) {
   }
 
   // Leyenda
-  ctx.font = '10px Arial'; ctx.textAlign = 'left';
+  ctx.font = '13px Arial'; ctx.textAlign = 'left';
   let lx = pad.l + 8, ly = pad.t + 12;
   ctx.strokeStyle = 'rgba(220,220,220,0.9)'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(lx+18, ly); ctx.stroke();
@@ -2145,13 +2145,13 @@ function _drawPayoff(canvas, s) {
   ctx.strokeStyle='#C9960A'; ctx.lineWidth=2; ctx.stroke();
 
   // Labels Y
-  ctx.fillStyle='#d0c8a8'; ctx.font='10px Arial'; ctx.textAlign='right';
+  ctx.fillStyle='#d0c8a8'; ctx.font='13px Arial'; ctx.textAlign='right';
   [pRange, 0, -pRange].forEach(v=>{
     const y=ys(v), txt=v===0?'0':(v>0?'+':'')+fmtM(v);
     ctx.fillText(txt, pad.l-4, y+4);
   });
   // Labels X
-  ctx.fillStyle='#d0c8a8'; ctx.font='10px Arial'; ctx.textAlign='center';
+  ctx.fillStyle='#d0c8a8'; ctx.font='13px Arial'; ctx.textAlign='center';
   [sMin, s.spot||(sMin+sMax)/2, sMax].forEach(v=>{
     const lbl=v>=1000?(v/1000).toFixed(1)+'k':Math.round(v).toString();
     ctx.fillText('$'+lbl, xs(v), H-pad.b+14);
