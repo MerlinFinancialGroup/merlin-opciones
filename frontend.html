@@ -1396,7 +1396,7 @@ function renderEstrategias() {
     { v: '2026-10-16', l: 'Octubre'   },
     { v: '2026-12-18', l: 'Diciembre' },
   ];
-  const sesgos = ['very_bearish','bearish','neutral','bullish','very_bullish'];
+const sesgos = ['very_bearish','bearish','neutral','bullish','very_bullish'];
 
   const tgtPct = spot && EST_STATE.targetPrice
     ? ((EST_STATE.targetPrice - spot) / spot * 100).toFixed(1)
@@ -1472,7 +1472,6 @@ function renderEstrategias() {
     EST_STATE.rcWeight = parseInt(e.target.value);
     _estStateSave();
     document.getElementById('rc-label').textContent = _rcLabel(EST_STATE.rcWeight);
-    // Re-renderizar resultados con nuevo orden
     if (EST_STATE.data) {
       document.getElementById('est-results').innerHTML = _renderEstResults(EST_STATE.data);
       requestAnimationFrame(() => _drawAllPayoffs(EST_STATE.data));
@@ -1490,7 +1489,7 @@ function renderEstrategias() {
     _estStateSave();
     loadEstrategias();
   });
-}
+
   // Click en card → visualizador
   document.getElementById('est-results').addEventListener('click', e => {
     const card = e.target.closest('.est-card[data-idx]');
