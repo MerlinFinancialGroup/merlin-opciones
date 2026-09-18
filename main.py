@@ -589,6 +589,25 @@ def _pg_load_latest():
         logger.error(f"PG load error: {e}")
     return None, None
 
+def _pg_load_precios_suby() -> dict:
+    """Carga el último precio_suby de PG para cada subyacente. Fallback entre Veta y IAMC."""
+    if not HAS_PG or not DATABASE_URL: return {}
+    try:
+        conn = _pg_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT ON (subyacente)
+                subyacente, precio_suby, fecha
+            FROM iamc_opciones_data
+            WHERE precio_suby IS NOT NULL AND precio_suby > 0
+            ORDER BY subyacente, fecha DESC
+        """)
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        return {row[0].upper(): float(row[1]) for row in rows if row[0] and row[1]}
+    except Exception as e:
+        logger.error(f"PG load precios_suby error: {e}")
+        return {}
+
 def _pg_load_opciones(fecha: str = None):
     if not HAS_PG or not DATABASE_URL: return []
     try:
@@ -1752,7 +1771,11 @@ async def _scheduler_iamc():
 @app.on_event("startup")
 async def startup():
     _pg_init()
-    global _scheduler_task, _veta_ws_task
+    global _scheduler_task, _veta_ws_task, _precios_suby_pg
+    # Cargar precios de PG como fallback entre Veta RT e IAMC
+    _precios_suby_pg = await asyncio.to_thread(_pg_load_precios_suby)
+    if _precios_suby_pg:
+        logger.info(f"[Startup] Precios suby desde PG: {_precios_suby_pg}")
     _scheduler_task = asyncio.create_task(scheduler())
     asyncio.create_task(_guardar_cierres_si_corresponde())
     asyncio.create_task(_scheduler_iamc())
@@ -1963,7 +1986,9 @@ async def get_cadena(
     tasa_dic = _tasas_rt.get("2026-12-18")
     # Precio RT del subyacente actual
     suby_actual = state.get("currentSuby") or (result[0].get("subyacente") if result else None)
-    precio_suby_rt = _precios_suby.get((suby_actual or "").upper())
+    # Precio en cadena: 1) Veta RT  2) PG último  3) IAMC (ya en las rows)
+    suby_key = (suby_actual or "").upper()
+    precio_suby_rt = _precios_suby.get(suby_key) or _precios_suby_pg.get(suby_key)
     return {"fecha": state["fecha"], "total": len(result), "data": result,
             "precio_suby_rt": precio_suby_rt,
             "tasas_rt": {"oct": round(tasa_oct*100,2) if tasa_oct else None,
@@ -2030,7 +2055,8 @@ LECAP_CONFIG = {
     "2026-12-18": {"ticker": "T30J6",  "sec_id": "bm_MERV_T30J6_CI",  "tem": 0.0255, "fecha_vto_lecap": "2026-12-30"},
 }
 _tasas_rt: dict   = {}  # vencimiento_opcion → tasa_anual_efectiva en tiempo real
-_precios_suby: dict = {}  # "GGAL" → precio RT del subyacente
+_precios_suby: dict = {}  # "GGAL" → precio RT del subyacente (Veta WS)
+_precios_suby_pg: dict = {}  # "GGAL" → último precio de PG (fallback entre RT e IAMC)
 import collections as _collections
 _veta_raw_m = _collections.deque(maxlen=80)
 
@@ -2138,7 +2164,12 @@ def _dispatch_veta(item: str):
                 ultimo = snap.get("ultimo") or snap.get("bid") or snap.get("ask")
                 if ultimo and ultimo > 0:
                     _precios_suby[sym_upper] = float(ultimo)
-                    # print(f"[Suby RT] {sym_upper} = {ultimo}")
+                    _precios_suby_pg[sym_upper] = float(ultimo)  # actualizar fallback también
+                    # Propagar a todas las opciones del state en memoria
+                    for r in state.get("opciones", []):
+                        if (r.get("subyacente") or "").upper() == sym_upper:
+                            r["precio_suby"] = float(ultimo)
+                    logger.debug(f"[Suby RT] {sym_upper} = {ultimo}")
     elif item.startswith("B:"):
         sec_id, book = _parse_book_msg(item[2:])
         if sec_id and book:
@@ -2293,11 +2324,14 @@ async def _veta_ws_loop():
                 lecap_sec_ids = [cfg["sec_id"] for cfg in LECAP_CONFIG.values()]
                 await ws.send(json.dumps({"_req": "S", "topicType": "md",   "topics": [f"md.{s}"   for s in lecap_sec_ids], "replace": False}))
                 await ws.send(json.dumps({"_req": "S", "topicType": "book", "topics": [f"book.{s}" for s in lecap_sec_ids], "replace": False}))
-                # Suscribir subyacentes para precio en tiempo real
+                # Suscribir subyacentes para precio en tiempo real (ambos tipos de rueda)
                 subyacentes_uniq = list(set(r["subyacente"] for r in state["opciones"] if r.get("subyacente")))
-                suby_sec_ids = [f"bm_MERV_{s}_24hs" for s in subyacentes_uniq]
+                suby_sec_ids = (
+                    [f"bm_MERV_{s}_24hs" for s in subyacentes_uniq] +
+                    [f"bm_MERV_{s}_CI"   for s in subyacentes_uniq]
+                )
                 await ws.send(json.dumps({"_req": "S", "topicType": "md", "topics": [f"md.{s}" for s in suby_sec_ids], "replace": False}))
-                print(f"[Veta WS] Suscrito a {len(todas)} opciones + {len(lecap_sec_ids)} LECAPs + {len(suby_sec_ids)} subyacentes")
+                logger.info(f"[Veta WS] Suscrito a {len(todas)} opciones + {len(lecap_sec_ids)} LECAPs + {len(subyacentes_uniq)} subyacentes ({len(suby_sec_ids)} feeds)")
 
                 msg_count = 0
                 async for message in ws:
