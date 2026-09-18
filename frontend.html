@@ -150,7 +150,7 @@ td.muted{color:#706858}
 .est-leg{font-size:10px;font-family:'JetBrains Mono',monospace;color:#a09880;padding:3px 6px;background:#0e0d0a;border-radius:3px;border-left:2px solid}
 .est-leg.long{border-color:#3ab07a;color:#90d0b0}
 .est-leg.short{border-color:#c0392b;color:#d09090}
-.est-payoff-canvas{width:100%;height:120px;display:block;border-radius:4px}
+.est-payoff-canvas{width:100%;height:192px;display:block;border-radius:4px}
 .est-be{font-size:10px;font-family:'JetBrains Mono',monospace;color:#706858;text-align:center}
 .est-section-title{font-size:11px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;padding:6px 0 2px;border-bottom:0.5px solid #2a2510}
 .est-loading{display:flex;align-items:center;justify-content:center;height:200px;color:#706858;font-family:'JetBrains Mono',monospace;font-size:11px}
@@ -1564,7 +1564,7 @@ function _renderEstCard(s, vto, idx) {
         <div class="m-val" style="color:${tgtPnl>=0?'#3ab07a':'#c0392b'}">${tgtPnl>=0?'+':''}$${fmt(tgtPnl)} por acción · ${lotes} lote${lotes>1?'s':''} = ${tgtPnl*lotes*100>=0?'+':''}$${fmt(tgtPnl*lotes*100)}</div>
       </div>` : ''}
     </div>
-    <canvas class="est-payoff-canvas" id="${canvasId}" height="120"></canvas>
+    <canvas class="est-payoff-canvas" id="${canvasId}" height="192"></canvas>
     <div class="est-be">Break-even: ${beList}</div>
     <div class="est-legs">${legsHtml}</div>
   </div>`;
