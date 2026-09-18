@@ -31,7 +31,6 @@ VETA_COOKIE   = os.getenv("VETA_COOKIE", "")
 VETA_ACCOUNT  = os.getenv("VETA_ACCOUNT", "")
 TZ_ARG        = ZoneInfo("America/Argentina/Buenos_Aires")
 
-# ── Tasas libre de riesgo por vencimiento (centralizadas) ─────────────────────
 _TASA_DEFAULT = 0.2287
 _TASA_FIJA: dict[str, float] = {
     "2026-10-16": 0.2287,
@@ -62,7 +61,6 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-# ── Estado global ──────────────────────────────────────────────────────────────
 state = {
     "opciones": [],
     "resumen": {},
@@ -73,7 +71,6 @@ state = {
 }
 _scheduler_task = None
 
-# ── PostgreSQL helpers ─────────────────────────────────────────────────────────
 def _pg_conn():
     return psycopg2.connect(DATABASE_URL)
 
@@ -230,10 +227,8 @@ def _pg_init():
             "ALTER TABLE bid_ask_cierre ADD COLUMN IF NOT EXISTS ultimo NUMERIC;",
         ]
         for m in migrations:
-            try:
-                cur.execute(m)
-            except Exception as me:
-                logger.warning(f"Migración omitida: {me}")
+            try: cur.execute(m)
+            except Exception as me: logger.warning(f"Migración omitida: {me}")
         conn.commit(); cur.close(); conn.close()
         logger.info("PG init OK")
     except Exception as e:
@@ -577,7 +572,6 @@ def _pg_load_opciones(fecha: str = None):
         logger.error(f"PG load opciones error: {e}")
         return []
 
-# ── Mapeo prefijo de opción → subyacente ───────────────────────────────────────
 OPCION_MAP = {
     "GFG":  "GGAL",
     "GGAL": "GGAL",
@@ -851,7 +845,6 @@ def _enrich_iv(rows: list) -> list:
 
     return rows
 
-# ── Parser PDF IAMC ────────────────────────────────────────────────────────────
 def _pf(v):
     if v is None: return None
     try:
@@ -1464,7 +1457,6 @@ async def startup():
     if VETA_COOKIE:
         _veta_ws_task = asyncio.create_task(_veta_ws_loop())
 
-# ── API endpoints ──────────────────────────────────────────────────────────────
 SUPABASE_URL  = "https://zqnxkgqalhhybcnzgjfk.supabase.co"
 SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpxbnhrZ3FhbGhoeWJjbnpnamZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg5Mzk3MDEsImV4cCI6MjA5NDUxNTcwMX0.GD0RHfLGzplLhL1E-_GUHh3HXSNsZsvFi436wcm2tD4"
 _token_cache: dict = {}
@@ -1522,7 +1514,7 @@ async def get_cadena(
     fecha: str = Query(None),
 ):
     rows = state["opciones"]
-    if not rows and fecha:
+    if not rows:
         rows = _pg_load_opciones(fecha)
     if subyacente:
         rows = [r for r in rows if (r.get("subyacente") or "").upper() == subyacente.upper()]
@@ -1973,9 +1965,8 @@ async def get_iv_surface(subyacente: str):
     ]
     return {"subyacente": subyacente, "fecha": state["fecha"], "data": surface}
 
-# ── Admin endpoints ────────────────────────────────────────────────────────────
-@app.get("/admin/reparse", dependencies=[Depends(require_auth)])
-@app.post("/admin/reparse", dependencies=[Depends(require_auth)])
+@app.get("/admin/reparse")
+@app.post("/admin/reparse")
 async def admin_reparse():
     pdf_bytes, fecha = _pg_load_latest()
     if not pdf_bytes:
@@ -1998,8 +1989,8 @@ async def admin_reparse():
         "muestra_ggal_con_datos": ggal_con_datos or ggal[:3],
     }
 
-@app.get("/admin/refresh", dependencies=[Depends(require_auth)])
-@app.post("/admin/refresh", dependencies=[Depends(require_auth)])
+@app.get("/admin/refresh")
+@app.post("/admin/refresh")
 async def admin_refresh(fecha_str: str = Query(None)):
     target = None
     if fecha_str:
@@ -2242,8 +2233,6 @@ async def test_iamc_url(fecha_str: str = Query(None)):
         except Exception as e:
             results.append({"fecha": test_date.isoformat(), "url": url, "error": str(e)})
     return {"results": results}
-
-# ── ESTRATEGIAS ────────────────────────────────────────────────────────────────
 
 def _payoff_array(legs: list, s_range: list) -> list:
     result = []
