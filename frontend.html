@@ -152,7 +152,7 @@ td.muted{color:#706858}
 .est-leg{font-size:9px;font-family:'JetBrains Mono',monospace;color:#a09880;padding:2px 5px;background:#0e0d0a;border-radius:3px;border-left:2px solid}
 .est-leg.long{border-color:#3ab07a;color:#90d0b0}
 .est-leg.short{border-color:#c0392b;color:#d09090}
-.est-payoff-canvas{width:100%;height:280px;display:block;border-radius:4px;flex:1}
+.est-payoff-canvas{width:100%;height:260px;display:block;border-radius:4px}
 .est-be{font-size:9px;font-family:'JetBrains Mono',monospace;color:#706858;text-align:center}
 .est-section-title{font-size:11px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#706858;padding:6px 0 2px;border-bottom:0.5px solid #2a2510}
 .est-loading{display:flex;align-items:center;justify-content:center;height:200px;color:#706858;font-family:'JetBrains Mono',monospace;font-size:11px}
@@ -2051,7 +2051,7 @@ function _drawPayoff(canvas, s) {
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
 
-  const pad = { l: 44, r: 8, t: 8, b: 22 };
+  const pad = { l: 52, r: 10, t: 12, b: 28 };
   const cW  = W - pad.l - pad.r;
   const cH  = H - pad.t - pad.b;
 
@@ -2108,16 +2108,16 @@ function _drawPayoff(canvas, s) {
   ctx.strokeStyle='#C9960A'; ctx.lineWidth=2; ctx.stroke();
 
   // Labels Y
-  ctx.fillStyle='#706858'; ctx.font='8px monospace'; ctx.textAlign='right';
-  [pRange,0,-pRange].forEach(v=>{
+  ctx.fillStyle='#a09880'; ctx.font=`${Math.round(10*dpr)/dpr}px monospace`; ctx.textAlign='right';
+  [pRange, 0, -pRange].forEach(v=>{
     const y=ys(v), txt=v===0?'0':(v>0?'+':'')+fmtM(v);
-    ctx.fillText(txt,pad.l-3,y+3);
+    ctx.fillText(txt, pad.l-4, y+4);
   });
   // Labels X
-  ctx.textAlign='center';
-  [sMin,s.spot||(sMin+sMax)/2,sMax].forEach(v=>{
-    const lbl=v>=1000?(v/1000).toFixed(1)+'k':v.toFixed(0);
-    ctx.fillText('$'+lbl,xs(v),H-pad.b+12);
+  ctx.fillStyle='#a09880'; ctx.textAlign='center';
+  [sMin, s.spot||(sMin+sMax)/2, sMax].forEach(v=>{
+    const lbl=v>=1000?(v/1000).toFixed(1)+'k':Math.round(v).toString();
+    ctx.fillText('$'+lbl, xs(v), H-pad.b+14);
   });
 }
 
