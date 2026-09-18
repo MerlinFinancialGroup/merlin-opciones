@@ -169,8 +169,10 @@ td.muted{color:#706858}
 .vis-kpi:first-child{border-left:none}
 .vis-kpi .k-lbl{font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.6px;color:#706858}
 .vis-kpi .k-val{font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-top:1px}
-.vis-body{flex:1;overflow:hidden;display:flex;flex-direction:column}
-.vis-graph-area{position:relative;flex-shrink:0;height:260px;background:#0e0d0a;border-bottom:1px solid #2a2510}
+.vis-body{flex:1;overflow:hidden;display:flex;flex-direction:row}
+.vis-left-panel{display:flex;flex-direction:column;flex:0 0 55%;overflow:hidden;border-right:1px solid #2a2510}
+.vis-right-panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
+.vis-graph-area{position:relative;flex:1;background:#0e0d0a;min-height:0}
 .vis-graph-canvas{width:100%;height:100%;display:block}
 .vis-date-label{position:absolute;bottom:6px;left:50%;transform:translateX(-50%);font-size:10px;font-family:'JetBrains Mono',monospace;color:#a09880;pointer-events:none}
 .vis-sliders{display:flex;gap:24px;align-items:center;padding:8px 20px;border-bottom:1px solid #2a2510;background:#12100a;flex-shrink:0;flex-wrap:wrap}
@@ -186,10 +188,10 @@ input[type=range].vis-range::-webkit-slider-thumb{-webkit-appearance:none;width:
 .vis-content-area{flex:1;overflow:auto;background:#0e0d0a;border-top:1px solid #2a2510}
 .vis-heatmap{height:100%}
 .vis-heatmap table{border-collapse:collapse;font-size:10px;font-family:'JetBrains Mono',monospace;white-space:nowrap;width:100%}
-.vis-heatmap th{position:sticky;top:0;background:#12100a;padding:5px 8px;text-align:center;color:#706858;border-bottom:1px solid #2a2510;font-size:9px;z-index:2}
+.vis-heatmap th{position:sticky;top:0;background:#12100a;padding:3px 5px;text-align:center;color:#706858;border-bottom:1px solid #2a2510;font-size:8px;z-index:2}
 .vis-heatmap th.sticky-col{position:sticky;left:0;z-index:3;background:#12100a;text-align:right}
-.vis-heatmap td{padding:3px 10px;text-align:right;border:0.5px solid #1a1710}
-.vis-heatmap td.price-col{position:sticky;left:0;background:#0e0d0a;color:#a09880;font-weight:500;z-index:1;border-right:1px solid #2a2510;padding:3px 8px}
+.vis-heatmap td{padding:2px 5px;text-align:right;border:0.5px solid #1a1710;font-size:9px}
+.vis-heatmap td.price-col{position:sticky;left:0;background:#0e0d0a;color:#a09880;font-weight:500;z-index:1;border-right:1px solid #2a2510;padding:2px 5px;font-size:9px}
 .vis-legs-row{display:flex;gap:8px;padding:10px 20px;flex-wrap:wrap;flex-shrink:0;border-bottom:1px solid #2a2510;background:#0a0906}
 .vis-leg-card{border:0.5px solid #2a2510;border-radius:4px;padding:6px 12px;display:flex;gap:14px;align-items:center}
 .vis-leg-card .vl-name{font-size:11px;font-weight:700}
@@ -1494,14 +1496,41 @@ function _renderEstResults(data) {
   const vtos = Object.keys(estrategias).sort();
   if (!vtos.length) return '<div class="est-loading">Sin estrategias para los parámetros seleccionados</div>';
 
+  // Si hay un solo vencimiento → 4 de ese vencimiento
+  // Si hay dos → mezclar todas y tomar las 4 mejores globales según el dial
+  const todosConVto = [];
+  for (const vto of vtos) {
+    for (const s of (estrategias[vto] || [])) {
+      todosConVto.push({ ...s, _vto: vto });
+    }
+  }
+
+  const w = EST_STATE.rcWeight / 100;
+  const top4 = todosConVto.sort((a, b) => {
+    const retA = a.max_profit && a.max_risk ? Math.abs(a.max_profit / a.max_risk) : 0;
+    const retB = b.max_profit && b.max_risk ? Math.abs(b.max_profit / b.max_risk) : 0;
+    const chA  = a.chance || 0;
+    const chB  = b.chance || 0;
+    return ((1-w)*retB*10 + w*chB) - ((1-w)*retA*10 + w*chA);
+  }).slice(0, 4);
+
+  // Agrupar por vencimiento para mostrar el label
+  const porVto = {};
+  top4.forEach((s, i) => {
+    if (!porVto[s._vto]) porVto[s._vto] = [];
+    porVto[s._vto].push({ s, globalIdx: i });
+  });
+
   let html = '';
   for (const vto of vtos) {
-    const strats = _scoreStrats(estrategias[vto] || []);
-    if (!strats.length) continue;
+    if (!porVto[vto]?.length) continue;
     const label = vto === '2026-10-16' ? 'Octubre — 16/10/2026' : 'Diciembre — 18/12/2026';
-    html += `<div class="est-section-title">${label} · ${strats[0]?.dias_vto || '?'} días</div>`;
+    const dias = porVto[vto][0].s.dias_vto || '?';
+    html += `<div class="est-section-title">${label} · ${dias} días</div>`;
     html += `<div class="est-grid">`;
-    strats.forEach((s, i) => { html += _renderEstCard(s, vto, i); });
+    porVto[vto].forEach(({ s, globalIdx }) => {
+      html += _renderEstCard(s, vto, globalIdx);
+    });
     html += `</div>`;
   }
   return html;
@@ -1697,33 +1726,35 @@ function _renderVisualizador(s) {
         ${l.bid&&l.ask?`<div class="vl-detail">B/A <span>$${fmt(l.bid)}/$${fmt(l.ask)}</span></div>`:''}
       </div>`).join('')}
     </div>
-    <div class="vis-graph-area">
-      <canvas class="vis-graph-canvas" id="vis-graph"></canvas>
-      <div class="vis-date-label" id="vis-date-lbl"></div>
-    </div>
-    <div class="vis-sliders">
-      <div class="vis-slider-group">
-        <span class="vis-slider-lbl">Fecha</span>
-        <input type="range" class="vis-range" id="sl-fecha" min="0" max="${nCols}" value="0" step="1" style="width:200px">
-        <span class="vis-slider-val" id="sl-fecha-val"></span>
-      </div>
-      <div class="vis-slider-group">
-        <span class="vis-slider-lbl">Rango ±</span>
-        <input type="range" class="vis-range" id="sl-range" min="5" max="40" value="15" step="1">
-        <span class="vis-slider-val" id="sl-range-val">±15%</span>
-      </div>
-      <div class="vis-slider-group">
-        <span class="vis-slider-lbl">IV implícita</span>
-        <input type="range" class="vis-range" id="sl-iv" min="50" max="300" value="100" step="5">
-        <span class="vis-slider-val" id="sl-iv-val">100%</span>
-      </div>
-    </div>
-    <div class="vis-bottom">
+    <div class="vis-left-panel">
       <div class="vis-tabs-bar">
         ${TABS.map(t=>`<button class="vis-tab${VS.tab===t.id?' active':''}" data-tab="${t.id}">${t.l}</button>`).join('')}
       </div>
       <div class="vis-content-area">
         <div class="vis-heatmap" id="vis-heatmap"></div>
+      </div>
+    </div>
+    <div class="vis-right-panel">
+      <div class="vis-graph-area">
+        <canvas class="vis-graph-canvas" id="vis-graph"></canvas>
+        <div class="vis-date-label" id="vis-date-lbl"></div>
+      </div>
+      <div class="vis-sliders">
+        <div class="vis-slider-group">
+          <span class="vis-slider-lbl">Fecha</span>
+          <input type="range" class="vis-range" id="sl-fecha" min="0" max="${nCols}" value="0" step="1" style="width:160px">
+          <span class="vis-slider-val" id="sl-fecha-val"></span>
+        </div>
+        <div class="vis-slider-group">
+          <span class="vis-slider-lbl">Rango ±</span>
+          <input type="range" class="vis-range" id="sl-range" min="5" max="40" value="15" step="1">
+          <span class="vis-slider-val" id="sl-range-val">±15%</span>
+        </div>
+        <div class="vis-slider-group">
+          <span class="vis-slider-lbl">IV implícita</span>
+          <input type="range" class="vis-range" id="sl-iv" min="50" max="300" value="100" step="5">
+          <span class="vis-slider-val" id="sl-iv-val">100%</span>
+        </div>
       </div>
     </div>
   </div>`;
